@@ -4,12 +4,15 @@
 
 Use `visualization/parameter_delta_analysis.py` to compare the parameters of an
 original model checkpoint against its defended counterpart and visualize the
-layer-wise differences.
+layer-wise differences. The script now relies on
+`AutoModelForCausalLM.from_pretrained`, so provide either a Hugging Face model
+identifier or a directory containing the full model configuration and weights
+that `from_pretrained` can load directly.
 
 ```bash
 python visualization/parameter_delta_analysis.py \
-    path/to/original_model.pt \
-    path/to/defended_model.pt \
+    path/to/original_model_directory \
+    path/to/defended_model_directory \
     --output-dir results/visualization/parameter_deltas \
     --metric l2 \
     --agg sum

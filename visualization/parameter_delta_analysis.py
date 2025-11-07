@@ -8,17 +8,21 @@ from typing import Dict, Tuple
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
+from transformers import AutoModelForCausalLM
 
 
 def load_state_dict(path: str) -> Dict[str, torch.Tensor]:
-    """Load a model checkpoint and return its state dict."""
+    """Load model weights using Hugging Face's AutoModelForCausalLM interface."""
 
-    checkpoint = torch.load(path, map_location="cpu")
-    if isinstance(checkpoint, dict):
-        if "state_dict" in checkpoint and isinstance(checkpoint["state_dict"], dict):
-            return checkpoint["state_dict"]
-        return checkpoint
-    raise ValueError(f"Unsupported checkpoint structure for {path!r}")
+    model = AutoModelForCausalLM.from_pretrained(
+        path,
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=False,
+    )
+    try:
+        return {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()}
+    finally:
+        del model
 
 
 def infer_layer_component(parameter_name: str) -> Tuple[int, str]:
@@ -56,7 +60,11 @@ def compute_parameter_deltas(
         def_tensor = defended[name]
         if orig_tensor.shape != def_tensor.shape:
             continue
-        delta = def_tensor - orig_tensor
+        if def_tensor.dtype != orig_tensor.dtype:
+            # Align dtypes for consistent comparisons.
+            def_tensor = def_tensor.to(orig_tensor.dtype)
+        work_tensor = def_tensor.to(torch.float32) - orig_tensor.to(torch.float32)
+        delta = work_tensor
         layer, component = infer_layer_component(name)
         rows.append(
             {
