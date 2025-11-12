@@ -21,6 +21,22 @@ from data.datasets import build_dual_dataset
 from models.activations import compute_activation_difference, forward_dataset
 
 
+def _normalize_layer_identifier(raw: str) -> str:
+    """Translate a CLI ``--layer`` value into a module path understood by hooks."""
+
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError("Layer names must be non-empty")
+    if stripped.isdigit():
+        # The majority of our experiments target transformer blocks addressed by
+        # their numeric index. ``model.layers`` is the common location for these
+        # blocks across the supported Hugging Face causal LM architectures, so we
+        # expose the ergonomic shorthand ``--layer 12`` which maps to
+        # ``model.layers.12``.
+        return f"model.layers.{stripped}"
+    return stripped
+
+
 def _parse_layers(layer_argument: Sequence[str] | str) -> list[str]:
     """Normalize the ``--layer`` argument into a list of module names."""
 
@@ -33,7 +49,7 @@ def _parse_layers(layer_argument: Sequence[str] | str) -> list[str]:
         for part in entry.split(","):
             name = part.strip()
             if name:
-                layers.append(name)
+                layers.append(_normalize_layer_identifier(name))
     if not layers:
         raise ValueError("At least one layer name must be provided via --layer")
     print(f"Capturing activations from layers: {layers}")
