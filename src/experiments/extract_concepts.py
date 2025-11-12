@@ -9,13 +9,16 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ..analysis.concept_vectors import (
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from analysis.concept_vectors import (
     ConceptVector,
     aggregate_difference,
     purify_concept_vector,
 )
-from ..data.datasets import build_dual_dataset
-from ..models.activations import compute_activation_difference, forward_dataset
+from data.datasets import build_dual_dataset
+from models.activations import compute_activation_difference, forward_dataset
 
 
 def _parse_layers(layer_argument: Sequence[str] | str) -> list[str]:
@@ -33,6 +36,7 @@ def _parse_layers(layer_argument: Sequence[str] | str) -> list[str]:
                 layers.append(name)
     if not layers:
         raise ValueError("At least one layer name must be provided via --layer")
+    print(f"Capturing activations from layers: {layers}")
     return layers
 
 
@@ -67,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--layer",
         dest="layer",
         action="append",
-        required=True,
+        default="0,1,2,3,4,5,6,7,8,9",
         help=(
             "Module name(s) for activation capture. Repeat the flag or provide a "
             "comma-separated list to capture multiple layers."
@@ -75,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--output", type=Path, required=True, help="Output directory")
+    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis/results/concepts_vector/Llama-3.2-1B-Instruct-tofu"), help="Output directory")
     parser.add_argument(
         "--method",
         choices=["mean", "pca"],
@@ -85,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=["fast", "accurate"],
-        default="accurate",
+        default="fast",
         help=(
             "Extraction mode: 'fast' computes concept vectors directly from the "
             "risk datasets, while 'accurate' performs the multi-dataset "

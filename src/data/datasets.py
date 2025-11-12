@@ -88,8 +88,14 @@ class RequestDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         record = self.records[idx]
+        messages = [{"role": "user", "content": record.text}]
+        prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    tokenize=False
+                )
         encoded = self.tokenizer(
-            record.text,
+            prompt,
             max_length=self.max_length,
             padding="max_length" if self.padding else False,
             truncation=self.truncation,
