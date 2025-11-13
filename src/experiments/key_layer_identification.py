@@ -10,12 +10,15 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ..analysis.key_layers import (
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from analysis.key_layers import (
     KeyLayerAnalysisResult,
     collect_last_token_hidden_states,
     identify_key_layers,
 )
-from ..data.datasets import load_dataset
+from data.datasets import load_dataset
 
 
 def parse_args() -> argparse.Namespace:
