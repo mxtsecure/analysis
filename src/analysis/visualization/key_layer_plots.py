@@ -24,7 +24,7 @@ def _normalise_path(path: Path | str) -> Path:
 def _apply_interval_shading(
     axes: Sequence[Axes],
     representational_segments: Sequence[LayerRange],
-    key_interval: Optional[LayerRange],
+    parameter_segments: Sequence[LayerRange],
     num_layers: int,
 ) -> None:
     for ax in axes:
@@ -37,10 +37,15 @@ def _apply_interval_shading(
                 alpha=0.08,
                 label=None,
             )
-        if key_interval is not None:
-            key_start, key_end = key_interval
-            key_end = min(key_end, num_layers - 1)
-            ax.axvspan(key_start - 0.5, key_end + 0.5, color="tab:orange", alpha=0.15, label=None)
+        for par_start, par_end in parameter_segments:
+            par_end = min(par_end, num_layers - 1)
+            ax.axvspan(
+                par_start - 0.5,
+                par_end + 0.5,
+                color="tab:orange",
+                alpha=0.12,
+                label=None,
+            )
 
 
 def _apply_vertical_markers(
@@ -120,7 +125,16 @@ def plot_key_layer_analysis(
     ]
     if not rep_segments:
         rep_segments = [result.intervals.representational]
-    _apply_interval_shading(axes, rep_segments, result.intervals.key, num_layers)
+    parameter_segments = list(result.intervals.parameter_spans)
+    _apply_interval_shading(axes, rep_segments, parameter_segments, num_layers)
+
+    overlap_segments = []
+    rep_start, rep_end = result.intervals.representational
+    for span_start, span_end in parameter_segments:
+        overlap_start = max(rep_start, span_start)
+        overlap_end = min(rep_end, span_end)
+        if overlap_start <= overlap_end:
+            overlap_segments.append((overlap_start, overlap_end))
 
     if critical_layers:
         _apply_vertical_markers(axes, critical_layers)
@@ -129,6 +143,18 @@ def plot_key_layer_analysis(
 
     if title:
         fig.suptitle(title)
+
+    if overlap_segments:
+        overlap_text = ", ".join(f"[{start}, {end}]" for start, end in overlap_segments)
+        fig.text(
+            0.5,
+            0.01,
+            f"Overlap between signals: {overlap_text}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="dimgray",
+        )
 
     fig.savefig(output, dpi=dpi, bbox_inches="tight")
     plt.close(fig)

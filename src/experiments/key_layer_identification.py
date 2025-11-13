@@ -131,10 +131,28 @@ def main() -> None:  # pragma: no cover - CLI entry point
             for interval in result.cosine.critical_intervals
         )
         print(f"Critical angular intervals: [{intervals_str}]")
-    if result.intervals.key is None:
-        print("No parameter-supported key interval found within representational window.")
+    if result.intervals.parameter_spans:
+        spans_str = ", ".join(
+            f"({start}, {end})" for start, end in result.intervals.parameter_spans
+        )
+        print(f"Parameter-significant spans: [{spans_str}]")
     else:
-        print(f"Key interval (after parameter filter): {result.intervals.key}")
+        print("No parameter-significant layers exceeded the z-threshold.")
+
+    overlap_segments = []
+    rep_start, rep_end = result.intervals.representational
+    for span_start, span_end in result.intervals.parameter_spans:
+        overlap_start = max(rep_start, span_start)
+        overlap_end = min(rep_end, span_end)
+        if overlap_start <= overlap_end:
+            overlap_segments.append((overlap_start, overlap_end))
+    if overlap_segments:
+        overlap_str = ", ".join(
+            f"({start}, {end})" for start, end in overlap_segments
+        )
+        print(f"Overlap between signals (for reference): [{overlap_str}]")
+    else:
+        print("No overlap detected between representational and parameter spans.")
 
     if args.plot or args.plot_path is not None:
         plot_path = args.plot_path or args.output.with_suffix(".png")
