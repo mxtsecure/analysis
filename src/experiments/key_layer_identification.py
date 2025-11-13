@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the defense model") 
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", type=Path, help="Normal query dataset path") 
     parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", type=Path, help="Risk query dataset path") 
-    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu/NPO-normal.json", type=Path, help="Output JSON file for metrics")
+    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/NPO-normal.json", type=Path, help="Output JSON file for metrics")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-pairs", type=int, default=500)
     parser.add_argument("--smoothing", type=int, default=5)
@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         help="Percentile used to select low-difference layers for baseline statistics",
     )
     parser.add_argument("--z-threshold", type=float, default=1.0)
-    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default=None)
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float16")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-length", type=int, default=512)
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-path",
         type=Path,
-        default=None,
+        default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/NPO-normal.png",
         help="Explicit path for saving the plot (implies --plot).",
     )
     return parser.parse_args()

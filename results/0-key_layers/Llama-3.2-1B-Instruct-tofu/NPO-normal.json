@@ -146,7 +146,19 @@
     ],
     "k_start": 0,
     "k_peak": 2,
-    "k_end_rep": 6
+    "k_end_rep": 2,
+    "critical_intervals": [
+      {
+        "start": 0,
+        "peak": 2,
+        "end": 2
+      },
+      {
+        "start": 14,
+        "peak": 15,
+        "end": 15
+      }
+    ]
   },
   "parameters": {
     "s_attn": [
@@ -225,11 +237,26 @@
   "intervals": {
     "representational": [
       0,
-      6
+      2
     ],
-    "key": [
+    "parameter_layers": [
       0,
-      0
+      2,
+      7
+    ],
+    "parameter_spans": [
+      [
+        0,
+        0
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        7,
+        7
+      ]
     ]
   }
 }
