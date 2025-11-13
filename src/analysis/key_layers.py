@@ -140,9 +140,14 @@ def compute_cosine_curves(
     num_pairs: int = 500,
     seed: Optional[int] = None,
     smoothing: int = 5,
-    baseline_layers: int = 3,
+    baseline_percentile: float = 30.0,
 ) -> CosineCurves:
-    """Compute cosine/angle statistics for N–N and N–R comparisons."""
+    """Compute cosine/angle statistics for N–N and N–R comparisons.
+
+    The baseline for determining onset/offset thresholds is estimated from layers whose
+    smoothed angle differences fall below the provided percentile, mirroring the notion
+    of "low-difference" layers described in the analysis spec.
+    """
 
     if not normal_states:
         raise ValueError("normal_states must contain at least one layer")
@@ -197,8 +202,12 @@ def compute_cosine_curves(
     kernel = np.ones(window, dtype=np.float64) / window
     smooth_delta = np.convolve(delta_phi, kernel, mode="same")
 
-    baseline_end = min(baseline_layers, len(smooth_delta))
-    baseline_values = smooth_delta[:baseline_end]
+    percentile = float(np.clip(baseline_percentile, 0.0, 100.0))
+    threshold_value = np.percentile(smooth_delta, percentile)
+    low_diff_mask = smooth_delta <= threshold_value
+    baseline_values = smooth_delta[low_diff_mask]
+    if baseline_values.size < 3:
+        baseline_values = np.sort(smooth_delta)[: min(3, len(smooth_delta))]
     mu0 = float(np.mean(baseline_values))
     std0 = float(np.std(baseline_values) + 1e-12)
 
@@ -348,7 +357,7 @@ def identify_key_layers(
     num_pairs: int = 500,
     seed: Optional[int] = None,
     smoothing: int = 5,
-    baseline_layers: int = 3,
+    baseline_percentile: float = 30.0,
     z_threshold: float = 1.0,
 ) -> KeyLayerAnalysisResult:
     """Full pipeline for computing key-layer intervals from activations and parameters."""
@@ -359,7 +368,7 @@ def identify_key_layers(
         num_pairs=num_pairs,
         seed=seed,
         smoothing=smoothing,
-        baseline_layers=baseline_layers,
+        baseline_percentile=baseline_percentile,
     )
     num_layers = len(normal_states)
     parameter_curves, significant_layers = compute_parameter_curves(
