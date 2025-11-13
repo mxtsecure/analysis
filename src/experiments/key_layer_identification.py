@@ -18,6 +18,7 @@ from analysis.key_layers import (
     collect_last_token_hidden_states,
     identify_key_layers,
 )
+from analysis.visualization import plot_key_layer_analysis
 from data.datasets import load_dataset
 
 
@@ -42,6 +43,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Render the stacked cosine/angle/parameter plot alongside the JSON output.",
+    )
+    parser.add_argument(
+        "--plot-path",
+        type=Path,
+        default=None,
+        help="Explicit path for saving the plot (implies --plot).",
+    )
     return parser.parse_args()
 
 
@@ -117,6 +129,23 @@ def main() -> None:  # pragma: no cover - CLI entry point
         print("No parameter-supported key interval found within representational window.")
     else:
         print(f"Key interval (after parameter filter): {result.intervals.key}")
+
+    if args.plot or args.plot_path is not None:
+        plot_path = args.plot_path or args.output.with_suffix(".png")
+        critical_layers = sorted(
+            {
+                result.cosine.k_start,
+                result.cosine.k_peak,
+                result.cosine.k_end_rep,
+            }
+        )
+        plot_key_layer_analysis(
+            result,
+            plot_path,
+            title=f"Key-layer analysis: {Path(args.defense_model).name}",
+            critical_layers=critical_layers,
+        )
+        print(f"Plot saved to {plot_path}")
 
 
 if __name__ == "__main__":  # pragma: no cover
