@@ -49,10 +49,11 @@ class ParameterCurves:
 
 @dataclass
 class KeyLayerIntervals:
-    """Represents the candidate and filtered key-layer intervals."""
+    """Captures representation- and parameter-driven layer signals independently."""
 
     representational: Tuple[int, int]
-    key: Optional[Tuple[int, int]]
+    parameter_layers: List[int]
+    parameter_spans: List[Tuple[int, int]]
 
 
 @dataclass
@@ -92,7 +93,10 @@ class KeyLayerAnalysisResult:
             },
             "intervals": {
                 "representational": list(self.intervals.representational),
-                "key": list(self.intervals.key) if self.intervals.key is not None else None,
+                "parameter_layers": list(self.intervals.parameter_layers),
+                "parameter_spans": [
+                    [start, end] for start, end in self.intervals.parameter_spans
+                ],
             },
         }
 
@@ -332,43 +336,36 @@ def compute_parameter_curves(
     )
 
 
-def _longest_consecutive_segment(indices: Sequence[int]) -> Optional[Tuple[int, int]]:
-    if not indices:
-        return None
-    sorted_idx = sorted(indices)
-    best_start = current_start = sorted_idx[0]
-    best_end = current_end = sorted_idx[0]
-    best_length = 1
-    current_length = 1
-    for idx in sorted_idx[1:]:
-        if idx == current_end + 1:
-            current_end = idx
-            current_length += 1
+def _group_consecutive_layers(layers: Sequence[int]) -> List[Tuple[int, int]]:
+    if not layers:
+        return []
+    sorted_layers = sorted(layers)
+    groups: List[Tuple[int, int]] = []
+    start = prev = sorted_layers[0]
+    for layer in sorted_layers[1:]:
+        if layer == prev + 1:
+            prev = layer
         else:
-            if current_length > best_length:
-                best_start, best_end = current_start, current_end
-                best_length = current_length
-            current_start = current_end = idx
-            current_length = 1
-    if current_length > best_length:
-        best_start, best_end = current_start, current_end
-    return best_start, best_end
+            groups.append((start, prev))
+            start = prev = layer
+    groups.append((start, prev))
+    return groups
 
 
 def integrate_signals(
     cosine: CosineCurves,
     parameter_layers: Sequence[int],
 ) -> KeyLayerIntervals:
-    """Combine representational and parameter signals to determine key layers."""
+    """Summarise representational and parameter signals without intersecting them."""
 
     rep_interval = (cosine.k_start, max(cosine.k_start, cosine.k_end_rep))
-    filtered = [
-        layer
-        for layer in parameter_layers
-        if rep_interval[0] <= layer <= rep_interval[1]
-    ]
-    key_interval = _longest_consecutive_segment(filtered)
-    return KeyLayerIntervals(representational=rep_interval, key=key_interval)
+    unique_layers = sorted(set(parameter_layers))
+    parameter_spans = _group_consecutive_layers(unique_layers)
+    return KeyLayerIntervals(
+        representational=rep_interval,
+        parameter_layers=unique_layers,
+        parameter_spans=parameter_spans,
+    )
 
 
 def identify_key_layers(
