@@ -125,6 +125,12 @@ def main() -> None:  # pragma: no cover - CLI entry point
     args.output.write_text(json.dumps(result.to_dict(), indent=2))
     print("=== Key layer analysis ===")
     print(f"Representational interval: {result.intervals.representational}")
+    if result.cosine.critical_intervals:
+        intervals_str = ", ".join(
+            f"(start={interval.start}, peak={interval.peak}, end={interval.end})"
+            for interval in result.cosine.critical_intervals
+        )
+        print(f"Critical angular intervals: [{intervals_str}]")
     if result.intervals.key is None:
         print("No parameter-supported key interval found within representational window.")
     else:
@@ -134,9 +140,9 @@ def main() -> None:  # pragma: no cover - CLI entry point
         plot_path = args.plot_path or args.output.with_suffix(".png")
         critical_layers = sorted(
             {
-                result.cosine.k_start,
-                result.cosine.k_peak,
-                result.cosine.k_end_rep,
+                layer
+                for interval in result.cosine.critical_intervals
+                for layer in (interval.start, interval.peak, interval.end)
             }
         )
         plot_key_layer_analysis(

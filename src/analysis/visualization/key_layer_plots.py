@@ -23,14 +23,20 @@ def _normalise_path(path: Path | str) -> Path:
 
 def _apply_interval_shading(
     axes: Sequence[Axes],
-    representational: LayerRange,
+    representational_segments: Sequence[LayerRange],
     key_interval: Optional[LayerRange],
     num_layers: int,
 ) -> None:
-    rep_start, rep_end = representational
-    rep_end = min(rep_end, num_layers - 1)
     for ax in axes:
-        ax.axvspan(rep_start - 0.5, rep_end + 0.5, color="tab:blue", alpha=0.08, label=None)
+        for rep_start, rep_end in representational_segments:
+            rep_end = min(rep_end, num_layers - 1)
+            ax.axvspan(
+                rep_start - 0.5,
+                rep_end + 0.5,
+                color="tab:blue",
+                alpha=0.08,
+                label=None,
+            )
         if key_interval is not None:
             key_start, key_end = key_interval
             key_end = min(key_end, num_layers - 1)
@@ -109,7 +115,12 @@ def plot_key_layer_analysis(
     ax_params.set_title("Parameter drift")
     ax_params.legend(loc="upper left")
 
-    _apply_interval_shading(axes, result.intervals.representational, result.intervals.key, num_layers)
+    rep_segments = [
+        (interval.start, interval.end) for interval in result.cosine.critical_intervals
+    ]
+    if not rep_segments:
+        rep_segments = [result.intervals.representational]
+    _apply_interval_shading(axes, rep_segments, result.intervals.key, num_layers)
 
     if critical_layers:
         _apply_vertical_markers(axes, critical_layers)

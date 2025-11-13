@@ -11,6 +11,15 @@ from torch.utils.data import DataLoader
 
 
 @dataclass
+class CosineCriticalInterval:
+    """Represents a contiguous segment where angular differences spike."""
+
+    start: int
+    peak: int
+    end: int
+
+
+@dataclass
 class CosineCurves:
     """Container storing cosine-based statistics for each transformer layer."""
 
@@ -25,6 +34,7 @@ class CosineCurves:
     k_start: int
     k_peak: int
     k_end_rep: int
+    critical_intervals: List[CosineCriticalInterval]
 
 
 @dataclass
@@ -69,6 +79,10 @@ class KeyLayerAnalysisResult:
                 "k_start": self.cosine.k_start,
                 "k_peak": self.cosine.k_peak,
                 "k_end_rep": self.cosine.k_end_rep,
+                "critical_intervals": [
+                    {"start": interval.start, "peak": interval.peak, "end": interval.end}
+                    for interval in self.cosine.critical_intervals
+                ],
             },
             "parameters": {
                 "s_attn": self.parameters.s_attn,
@@ -144,9 +158,9 @@ def compute_cosine_curves(
 ) -> CosineCurves:
     """Compute cosine/angle statistics for N–N and N–R comparisons.
 
-    The baseline for determining onset/offset thresholds is estimated from layers whose
-    smoothed angle differences fall below the provided percentile, mirroring the notion
-    of "low-difference" layers described in the analysis spec.
+    Instead of relying on onset/offset thresholds, we highlight every segment that shows a
+    rising trend in the smoothed angular differences so downstream consumers can track all
+    regions where divergence increases.
     """
 
     if not normal_states:
@@ -202,34 +216,42 @@ def compute_cosine_curves(
     kernel = np.ones(window, dtype=np.float64) / window
     smooth_delta = np.convolve(delta_phi, kernel, mode="same")
 
-    percentile = float(np.clip(baseline_percentile, 0.0, 100.0))
-    threshold_value = np.percentile(smooth_delta, percentile)
-    low_diff_mask = smooth_delta <= threshold_value
-    baseline_values = smooth_delta[low_diff_mask]
-    if baseline_values.size < 3:
-        baseline_values = np.sort(smooth_delta)[: min(3, len(smooth_delta))]
-    mu0 = float(np.mean(baseline_values))
-    std0 = float(np.std(baseline_values) + 1e-12)
+    # ``baseline_percentile`` is retained in the signature for backwards compatibility but
+    # the detection now focuses purely on rising trends.
+    positive_slope = np.diff(smooth_delta) > 0.0
+    critical_intervals: List[CosineCriticalInterval] = []
+    idx = 0
+    while idx < len(positive_slope):
+        if not positive_slope[idx]:
+            idx += 1
+            continue
+        seg_start = idx
+        while idx < len(positive_slope) and positive_slope[idx]:
+            idx += 1
+        seg_end = idx  # idx already points to the first non-positive slope (exclusive)
+        interval_start = seg_start
+        interval_end = seg_end
+        segment = smooth_delta[interval_start : interval_end + 1]
+        peak_offset = int(np.argmax(segment))
+        peak_idx = interval_start + peak_offset
+        critical_intervals.append(
+            CosineCriticalInterval(
+                start=int(interval_start), peak=int(peak_idx), end=int(interval_end)
+            )
+        )
 
-    start_threshold = mu0 + 2.0 * std0
-    candidate_indices = np.where(smooth_delta > start_threshold)[0]
-    if candidate_indices.size == 0:
-        k_start = 0
+    if critical_intervals:
+        primary = max(
+            critical_intervals,
+            key=lambda interval: smooth_delta[int(interval.peak)],
+        )
+        k_start = primary.start
+        k_peak = primary.peak
+        k_end_rep = primary.end
     else:
-        k_start = int(candidate_indices[0])
-
-    if k_start >= len(smooth_delta):
-        k_start = len(smooth_delta) - 1
-
-    k_peak = int(k_start + np.argmax(smooth_delta[k_start:]))
-
-    end_threshold = mu0 + 1.5 * std0
-    half_peak = 0.5 * smooth_delta[k_peak]
-    k_end_rep = len(smooth_delta) - 1
-    for idx in range(k_peak, len(smooth_delta)):
-        if smooth_delta[idx] < end_threshold or smooth_delta[idx] < half_peak:
-            k_end_rep = idx
-            break
+        k_start = 0
+        k_peak = int(np.argmax(smooth_delta))
+        k_end_rep = k_peak
 
     return CosineCurves(
         mu_nn=mu_nn,
@@ -243,6 +265,7 @@ def compute_cosine_curves(
         k_start=k_start,
         k_peak=k_peak,
         k_end_rep=k_end_rep,
+        critical_intervals=critical_intervals,
     )
 
 
