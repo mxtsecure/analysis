@@ -10,27 +10,30 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ..analysis.key_layers import (
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from analysis.key_layers import (
     KeyLayerAnalysisResult,
     collect_last_token_hidden_states,
     identify_key_layers,
 )
-from ..data.datasets import load_dataset
+from data.datasets import load_dataset
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-model", required=True, help="Path to M_tofu (base model)")
-    parser.add_argument("--defense-model", required=True, help="Path to the defense model")
-    parser.add_argument("--normal", required=True, type=Path, help="Normal query dataset path")
-    parser.add_argument("--risk", required=True, type=Path, help="Risk query dataset path")
-    parser.add_argument("--output", required=True, type=Path, help="Output JSON file for metrics")
+    parser.add_argument("--base-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to M_tofu (base model)")
+    parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the defense model")
+    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", type=Path, help="Normal query dataset path")
+    parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", type=Path, help="Risk query dataset path")
+    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu/NPO-normal.json", type=Path, help="Output JSON file for metrics")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-pairs", type=int, default=500)
     parser.add_argument("--smoothing", type=int, default=5)
     parser.add_argument("--baseline-layers", type=int, default=3)
     parser.add_argument("--z-threshold", type=float, default=1.0)
-    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default=None)
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float16")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-length", type=int, default=512)
