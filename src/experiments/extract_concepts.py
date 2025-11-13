@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis/results/concepts_vector/Llama-3.2-1B-Instruct-tofu"), help="Output directory")
+    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis/results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/accurate"), help="Output directory")
     parser.add_argument(
         "--method",
         choices=["mean", "pca"],
@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=["fast", "accurate"],
-        default="fast",
+        default="accurate",
         help=(
             "Extraction mode: 'fast' computes concept vectors directly from the "
             "risk datasets, while 'accurate' performs the multi-dataset "
@@ -139,9 +139,9 @@ def make_dataloaders(tokenizer, args) -> tuple[DataLoader, DataLoader, DataLoade
 def extract_concept_vectors(args: argparse.Namespace) -> dict:
     device = torch.device(args.device)
     tokenizer = AutoTokenizer.from_pretrained(args.base)
-    base_model = AutoModelForCausalLM.from_pretrained(args.base).to(device)
-    safety_model = AutoModelForCausalLM.from_pretrained(args.safety).to(device)
-    privacy_model = AutoModelForCausalLM.from_pretrained(args.privacy).to(device)
+    base_model = AutoModelForCausalLM.from_pretrained(args.base, dtype=torch.float16).to(device)
+    safety_model = AutoModelForCausalLM.from_pretrained(args.safety, dtype=torch.float16).to(device)
+    privacy_model = AutoModelForCausalLM.from_pretrained(args.privacy, dtype=torch.float16).to(device)
 
     normal_loader, malicious_loader, privacy_loader = make_dataloaders(tokenizer, args)
 
