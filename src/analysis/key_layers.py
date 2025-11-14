@@ -30,10 +30,6 @@ class CosineCurves:
     angle_nn: List[float]
     angle_nr: List[float]
     delta_phi: List[float]
-    smooth_delta_phi: List[float]
-    k_start: int
-    k_peak: int
-    k_end_rep: int
     critical_intervals: List[CosineCriticalInterval]
 
 
@@ -51,7 +47,7 @@ class ParameterCurves:
 class KeyLayerIntervals:
     """Captures representation- and parameter-driven layer signals independently."""
 
-    representational: Tuple[int, int]
+    representational: List[Tuple[int, int]]
     parameter_layers: List[int]
     parameter_spans: List[Tuple[int, int]]
 
@@ -76,10 +72,6 @@ class KeyLayerAnalysisResult:
                 "angle_nn": self.cosine.angle_nn,
                 "angle_nr": self.cosine.angle_nr,
                 "delta_phi": self.cosine.delta_phi,
-                "smooth_delta_phi": self.cosine.smooth_delta_phi,
-                "k_start": self.cosine.k_start,
-                "k_peak": self.cosine.k_peak,
-                "k_end_rep": self.cosine.k_end_rep,
                 "critical_intervals": [
                     {"start": interval.start, "peak": interval.peak, "end": interval.end}
                     for interval in self.cosine.critical_intervals
@@ -215,13 +207,7 @@ def compute_cosine_curves(
         angle_nr.append(ang_nr)
         cos_delta.append(ang_nr - ang_nn)
 
-    delta_phi = np.array(cos_delta)
-    window = max(1, smoothing)
-    kernel = np.ones(window, dtype=np.float64) / window
-    smooth_delta = np.convolve(delta_phi, kernel, mode="same")
-
-    # ``baseline_percentile`` is retained in the signature for backwards compatibility but
-    # the detection now focuses purely on rising trends.
+    smooth_delta = np.array(cos_delta)
     positive_slope = np.diff(smooth_delta) > 0.0
     critical_intervals: List[CosineCriticalInterval] = []
     idx = 0
@@ -244,19 +230,6 @@ def compute_cosine_curves(
             )
         )
 
-    if critical_intervals:
-        primary = max(
-            critical_intervals,
-            key=lambda interval: smooth_delta[int(interval.peak)],
-        )
-        k_start = primary.start
-        k_peak = primary.peak
-        k_end_rep = primary.end
-    else:
-        k_start = 0
-        k_peak = int(np.argmax(smooth_delta))
-        k_end_rep = k_peak
-
     return CosineCurves(
         mu_nn=mu_nn,
         mu_nr=mu_nr,
@@ -265,10 +238,6 @@ def compute_cosine_curves(
         angle_nn=angle_nn,
         angle_nr=angle_nr,
         delta_phi=cos_delta,
-        smooth_delta_phi=smooth_delta.tolist(),
-        k_start=k_start,
-        k_peak=k_peak,
-        k_end_rep=k_end_rep,
         critical_intervals=critical_intervals,
     )
 
@@ -335,6 +304,23 @@ def compute_parameter_curves(
         significant_layers,
     )
 
+def _merge_intervals(intervals: Sequence[CosineCriticalInterval]) -> List[Tuple[int, int]]:
+    """Merges a list of CosineCriticalIntervals into a minimal list of non-overlapping spans (start, end)."""
+    if not intervals:
+        return []
+    spans = sorted([(i.start, i.end) for i in intervals], key=lambda x: x[0])
+    
+    merged = []
+    current_start, current_end = spans[0]
+
+    for next_start, next_end in spans[1:]:
+        if next_start <= current_end:
+            current_end = max(current_end, next_end)
+        else:
+            merged.append((current_start, current_end))
+            current_start, current_end = next_start, next_end
+    merged.append((current_start, current_end))
+    return merged
 
 def _group_consecutive_layers(layers: Sequence[int]) -> List[Tuple[int, int]]:
     if not layers:
@@ -358,7 +344,7 @@ def integrate_signals(
 ) -> KeyLayerIntervals:
     """Summarise representational and parameter signals without intersecting them."""
 
-    rep_interval = (cosine.k_start, max(cosine.k_start, cosine.k_end_rep))
+    rep_interval = _merge_intervals(cosine.critical_intervals)
     unique_layers = sorted(set(parameter_layers))
     parameter_spans = _group_consecutive_layers(unique_layers)
     return KeyLayerIntervals(

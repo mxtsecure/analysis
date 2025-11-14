@@ -25,10 +25,10 @@ from data.datasets import load_dataset
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to M_tofu (base model)") 
-    parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the defense model") 
+    parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Path to the defense model") 
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", type=Path, help="Normal query dataset path") 
-    parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", type=Path, help="Risk query dataset path") 
-    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/NPO-normal.json", type=Path, help="Output JSON file for metrics")
+    parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", type=Path, help="Risk query dataset path") 
+    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/Llama-3.2-1B-Instruct-tofu-DPO/DPO.json", type=Path, help="Output JSON file for metrics")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-pairs", type=int, default=500)
     parser.add_argument("--smoothing", type=int, default=5)
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-path",
         type=Path,
-        default="/data/xiangtao/projects/crossdefense/code/analysis/results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/NPO-normal.png",
+        default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/Llama-3.2-1B-Instruct-tofu-DPO/DPO.png",
         help="Explicit path for saving the plot (implies --plot).",
     )
     return parser.parse_args()
@@ -123,51 +123,58 @@ def main() -> None:  # pragma: no cover - CLI entry point
     result = run_analysis(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result.to_dict(), indent=2))
-    print("=== Key layer analysis ===")
-    print(f"Representational interval: {result.intervals.representational}")
-    if result.cosine.critical_intervals:
-        intervals_str = ", ".join(
-            f"(start={interval.start}, peak={interval.peak}, end={interval.end})"
-            for interval in result.cosine.critical_intervals
-        )
-        print(f"Critical angular intervals: [{intervals_str}]")
-    if result.intervals.parameter_spans:
-        spans_str = ", ".join(
-            f"({start}, {end})" for start, end in result.intervals.parameter_spans
-        )
-        print(f"Parameter-significant spans: [{spans_str}]")
-    else:
-        print("No parameter-significant layers exceeded the z-threshold.")
 
+    print("=== Key Layer Analysis Summary ===")   
+    
+    # --- 1. 表示层关键分歧区间 ---
+    rep_spans = result.intervals.representational
+    if rep_spans:
+        spans_str = ", ".join(f"({start}, {end})" for start, end in rep_spans)
+        print(f"Representational Spans (Merged): [{spans_str}]")
+    else:
+        print("Representational Spans: None detected or merged.")
+    
+    # --- 2. 参数层显著区间 ---
+    param_spans = result.intervals.parameter_spans
+    if param_spans:
+        spans_str = ", ".join(
+            f"({start}, {end})" for start, end in param_spans
+        )
+        print(f"Parameter-Significant Spans: [{spans_str}]")
+    else:
+        print("Parameter-Significant Spans: None (Did not exceed z-threshold).")
+
+    # --- 3. 信号重叠区间 ---
     overlap_segments = []
-    rep_start, rep_end = result.intervals.representational
-    for span_start, span_end in result.intervals.parameter_spans:
-        overlap_start = max(rep_start, span_start)
-        overlap_end = min(rep_end, span_end)
-        if overlap_start <= overlap_end:
-            overlap_segments.append((overlap_start, overlap_end))
+    for rep_start, rep_end in rep_spans:
+        for span_start, span_end in param_spans:
+            overlap_start = max(rep_start, span_start)
+            overlap_end = min(rep_end, span_end)
+            
+            if overlap_start <= overlap_end:
+                overlap_segments.append((overlap_start, overlap_end))
+
     if overlap_segments:
         overlap_str = ", ".join(
             f"({start}, {end})" for start, end in overlap_segments
         )
-        print(f"Overlap between signals (for reference): [{overlap_str}]")
+        print(f"Overlap between Signals: [{overlap_str}]")
     else:
-        print("No overlap detected between representational and parameter spans.")
+        print("Overlap between Signals: None detected.")
 
+    # --- 4. 绘图和输出 ---  
     if args.plot or args.plot_path is not None:
         plot_path = args.plot_path or args.output.with_suffix(".png")
-        critical_layers = sorted(
-            {
-                layer
-                for interval in result.cosine.critical_intervals
-                for layer in (interval.start, interval.peak, interval.end)
-            }
-        )
+        
+        critical_layers = set()
+        for start, end in rep_spans:
+             critical_layers.update(range(start, end + 1)) 
+          
         plot_key_layer_analysis(
             result,
             plot_path,
             title=f"Key-layer analysis: {Path(args.defense_model).name}",
-            critical_layers=critical_layers,
+            critical_layers=sorted(list(critical_layers)),
         )
         print(f"Plot saved to {plot_path}")
 
