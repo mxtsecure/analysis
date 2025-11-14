@@ -309,7 +309,7 @@ def evaluate_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, help="Base model identifier")
+    parser.add_argument("--model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Base model identifier")
     parser.add_argument("--safety-dataset", type=Path, required=True, help="Path to malicious prompts JSONL")
     parser.add_argument("--forget-dataset", type=Path, required=True, help="Path to TOFU forget JSONL")
     parser.add_argument("--layer-start", type=int, required=True, help="First layer to scale (inclusive)")
