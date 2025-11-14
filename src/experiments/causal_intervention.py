@@ -276,9 +276,9 @@ def compute_extraction_strength(
 def evaluate_model(
     model,
     tokenizer,
-    safety_prompts: Sequence[str],
-    forget_dataset: ForgetDataset,
-    judge: MDJudgeEvaluator,
+    safety_prompts: Optional[Sequence[str]],
+    forget_dataset: Optional[ForgetDataset],
+    judge: Optional[MDJudgeEvaluator],
     device: torch.device,
     max_new_tokens: int,
     temperature: float,
@@ -286,32 +286,41 @@ def evaluate_model(
     asr_threshold: int,
     es_batch_size: int,
 ) -> Dict[str, float]:
-    asr = compute_attack_success_rate(
-        model,
-        tokenizer,
-        safety_prompts,
-        judge,
-        device=device,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        success_threshold=asr_threshold,
-    )
-    es = compute_extraction_strength(
-        model,
-        forget_dataset,
-        tokenizer,
-        device=device,
-        batch_size=es_batch_size,
-    )
-    return {"asr": asr, "es": es}
+    metrics: Dict[str, float] = {}
+    if safety_prompts is not None and judge is not None:
+        metrics["asr"] = compute_attack_success_rate(
+            model,
+            tokenizer,
+            safety_prompts,
+            judge,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            success_threshold=asr_threshold,
+        )
+    if forget_dataset is not None:
+        metrics["es"] = compute_extraction_strength(
+            model,
+            forget_dataset,
+            tokenizer,
+            device=device,
+            batch_size=es_batch_size,
+        )
+    return metrics
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+<<<<<<< HEAD
     parser.add_argument("--model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Base model identifier")
     parser.add_argument("--safety-dataset", type=Path, required=True, help="Path to malicious prompts JSONL")
     parser.add_argument("--forget-dataset", type=Path, required=True, help="Path to TOFU forget JSONL")
+=======
+    parser.add_argument("--model", required=True, help="Base model identifier")
+    parser.add_argument("--safety-dataset", type=Path, help="Path to malicious prompts JSONL")
+    parser.add_argument("--forget-dataset", type=Path, help="Path to TOFU forget JSONL")
+>>>>>>> 9d55f7138ab61cc29ec8e55fc1ae67f905cd5a4b
     parser.add_argument("--layer-start", type=int, required=True, help="First layer to scale (inclusive)")
     parser.add_argument("--layer-end", type=int, required=True, help="Last layer to scale (exclusive)")
     parser.add_argument("--scale-factor", type=float, default=1.1, help="Multiplicative factor for scaling")
@@ -322,7 +331,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--es-batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output", type=Path, help="Optional path to store the evaluation summary as JSON")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.safety_dataset is None and args.forget_dataset is None:
+        parser.error("At least one of --safety-dataset or --forget-dataset must be provided")
+    return args
 
 
 def main() -> None:  # pragma: no cover - CLI
@@ -331,13 +343,20 @@ def main() -> None:  # pragma: no cover - CLI
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=False)
     _ensure_pad_token(tokenizer)
 
-    safety_prompts = load_safety_prompts(args.safety_dataset)
-    forget_dataset = load_forget_dataset(args.forget_dataset, tokenizer=tokenizer)
+    safety_prompts: Optional[List[str]] = None
+    if args.safety_dataset is not None:
+        safety_prompts = load_safety_prompts(args.safety_dataset)
+
+    forget_dataset: Optional[ForgetDataset] = None
+    if args.forget_dataset is not None:
+        forget_dataset = load_forget_dataset(args.forget_dataset, tokenizer=tokenizer)
 
     base_model = AutoModelForCausalLM.from_pretrained(args.model, trust_remote_code=True)
     base_model.to(device)
 
-    judge = MDJudgeEvaluator()
+    judge: Optional[MDJudgeEvaluator] = None
+    if safety_prompts is not None:
+        judge = MDJudgeEvaluator()
 
     base_metrics = evaluate_model(
         base_model,
@@ -379,6 +398,10 @@ def main() -> None:  # pragma: no cover - CLI
             "layer_start": args.layer_start,
             "layer_end": args.layer_end,
             "scale_factor": args.scale_factor,
+            "datasets": {
+                "safety": str(args.safety_dataset) if args.safety_dataset else None,
+                "forget": str(args.forget_dataset) if args.forget_dataset else None,
+            },
         },
     }
 
