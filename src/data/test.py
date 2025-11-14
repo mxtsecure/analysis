@@ -38,7 +38,7 @@ def csv_to_jsonl_single_text_column(csv_filepath, jsonl_filepath):
         print(f"发生错误: {e}")
 
 # --- 示例用法 ---
-csv_file = '/data/xiangtao/projects/crossdefense/code/analysis_old/interpretability/03-identity_ciritcal_layer/Safety-Layers/Code/Cos_sim_analysis/privacy.csv'
-jsonl_file = '/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl'
+csv_file = '/data/xiangtao/projects/crossdefense/code/analysis_old/interpretability/03-identity_ciritcal_layer/Safety-Layers/Code/Cos_sim_analysis/retain.csv'
+jsonl_file = '/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/retain.jsonl'
 
 csv_to_jsonl_single_text_column(csv_file, jsonl_file)
