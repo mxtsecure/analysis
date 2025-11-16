@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -76,38 +77,90 @@ def plot_concept_conflict(
     """Plot a 2D visualization of the concept conflict and save it."""
 
     import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyArrowPatch, Wedge
 
     directions = stack_concept_directions(safety, privacy)
     coords = project_to_2d(directions)
     coords_list = coords.tolist()
     labels = ["Safety", "Privacy"]
-    colors = ["tab:blue", "tab:red"]
+    colors = ["#2878b5", "#d14a61"]
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    limit = max(float(coords.abs().max().item()), 1e-3)
-    limit *= 1.2
-    head_width = 0.03 * limit
-    head_length = 0.05 * limit
-    for (x, y), label, color in zip(coords_list, labels, colors):
-        ax.arrow(0, 0, x, y, head_width=head_width, head_length=head_length, fc=color, ec=color)
-        ax.annotate(label, (x, y), textcoords="offset points", xytext=(5, 5), color=color)
+    try:
+        style_ctx = plt.style.context("seaborn-v0_8-whitegrid")
+    except OSError:
+        style_ctx = nullcontext()
 
-    cos_val = max(-1.0, min(1.0, float(similarity)))
-    angle_deg = math.degrees(math.acos(cos_val))
-    annotation = f"cosθ = {cos_val:.3f}\nθ = {angle_deg:.1f}°"
-    ax.text(0.05, 0.95, annotation, transform=ax.transAxes, va="top")
+    with style_ctx:
+        fig, ax = plt.subplots(figsize=(7, 7))
+        limit = max(float(coords.abs().max().item()), 1e-3)
+        limit *= 1.25
 
-    ax.set_xlabel("Component 1")
-    ax.set_ylabel("Component 2")
-    ax.set_title("Concept conflict: safety vs privacy")
-    ax.set_xlim(-limit, limit)
-    ax.set_ylim(-limit, limit)
-    ax.set_aspect("equal", "box")
-    ax.grid(True, linestyle="--", alpha=0.4)
+        # soft radial backdrop to emphasize the angle between concepts
+        angle_a = math.degrees(math.atan2(coords_list[0][1], coords_list[0][0]))
+        angle_b = math.degrees(math.atan2(coords_list[1][1], coords_list[1][0]))
+        start_angle, end_angle = sorted((angle_a, angle_b))
+        wedge = Wedge(
+            (0.0, 0.0),
+            0.45 * limit,
+            start_angle,
+            end_angle,
+            width=0.12 * limit,
+            facecolor="#c2d5f2",
+            edgecolor="none",
+            alpha=0.35,
+        )
+        ax.add_patch(wedge)
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight")
-    plt.close(fig)
+        for (x, y), label, color in zip(coords_list, labels, colors):
+            arrow = FancyArrowPatch(
+                (0.0, 0.0),
+                (x, y),
+                arrowstyle="-|>",
+                mutation_scale=20,
+                linewidth=3.0,
+                color=color,
+                alpha=0.95,
+            )
+            ax.add_patch(arrow)
+            ax.scatter([x], [y], color=color, s=80, zorder=5, edgecolors="white", linewidths=1.5)
+            ax.annotate(
+                label,
+                (x, y),
+                xytext=(6, 6),
+                textcoords="offset points",
+                color=color,
+                fontsize=12,
+                fontweight="bold",
+            )
+
+        cos_val = max(-1.0, min(1.0, float(similarity)))
+        angle_deg = math.degrees(math.acos(cos_val))
+        annotation = f"cosθ = {cos_val:.3f}\nθ = {angle_deg:.1f}°"
+        ax.text(
+            0.02,
+            0.98,
+            annotation,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=12,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
+        )
+
+        ax.set_xlabel("Projection component 1", fontsize=12)
+        ax.set_ylabel("Projection component 2", fontsize=12)
+        ax.set_title("Safety vs. Privacy Concept Geometry", fontsize=14, fontweight="bold")
+        ax.set_xlim(-limit, limit)
+        ax.set_ylim(-limit, limit)
+        ax.set_aspect("equal", "box")
+        ax.axhline(0, color="#888888", linewidth=1, alpha=0.6)
+        ax.axvline(0, color="#888888", linewidth=1, alpha=0.6)
+        ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.35)
+        ax.legend(labels, loc="upper right", frameon=False)
+
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        plt.close(fig)
 
 
 def main() -> None:  # pragma: no cover - CLI
