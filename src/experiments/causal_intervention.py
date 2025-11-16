@@ -11,9 +11,11 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-
-from ..models.layer_scaling import LayerRange, scale_model_layers
-from ..models.md_judge import MDJudgeEvaluator
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from models.layer_scaling import LayerRange, scale_model_layers
+from models.md_judge import MDJudgeEvaluator
 
 
 def _ensure_pad_token(tokenizer) -> None:
@@ -312,19 +314,13 @@ def evaluate_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-<<<<<<< HEAD
     parser.add_argument("--model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Base model identifier")
-    parser.add_argument("--safety-dataset", type=Path, required=True, help="Path to malicious prompts JSONL")
-    parser.add_argument("--forget-dataset", type=Path, required=True, help="Path to TOFU forget JSONL")
-=======
-    parser.add_argument("--model", required=True, help="Base model identifier")
-    parser.add_argument("--safety-dataset", type=Path, help="Path to malicious prompts JSONL")
-    parser.add_argument("--forget-dataset", type=Path, help="Path to TOFU forget JSONL")
->>>>>>> 9d55f7138ab61cc29ec8e55fc1ae67f905cd5a4b
-    parser.add_argument("--layer-start", type=int, required=True, help="First layer to scale (inclusive)")
-    parser.add_argument("--layer-end", type=int, required=True, help="Last layer to scale (exclusive)")
-    parser.add_argument("--scale-factor", type=float, default=1.1, help="Multiplicative factor for scaling")
-    parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--safety-dataset", type=Path, default=None, help="Path to malicious prompts JSONL")
+    parser.add_argument("--forget-dataset", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy_with_answer.jsonl", help="Path to TOFU forget JSONL")
+    parser.add_argument("--layer-start", type=int, default=15, help="First layer to scale (inclusive)")
+    parser.add_argument("--layer-end", type=int, default=16, help="Last layer to scale (exclusive)")
+    parser.add_argument("--scale-factor", type=float, default=1.2, help="Multiplicative factor for scaling")
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--asr-threshold", type=int, default=4)
