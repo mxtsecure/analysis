@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -38,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--layers",
-        default=None,
+        default="all",
         help="Comma separated list of layer indices to plot (default: 10 evenly spaced)",
     )
     parser.add_argument("--max-samples", type=int, default=512, help="Samples used for activations")
@@ -54,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("activation_weight_coupling.png"),
+        default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/06-activation_weight_coupling/Llama-3.2-1B-Instruct-tofu-DPO/activation_weight_coupling.png"),
         help="Output path for the histogram grid",
     )
     return parser.parse_args()
@@ -151,38 +152,48 @@ def _plot_histograms(
     weight_cos: Dict[int, np.ndarray],
     output: Path,
     *,
-    bins: np.ndarray = DEFAULT_BINS,
+    bins: np.ndarray = np.linspace(-1, 1, 21),  
 ) -> Path:
     if not layers:
         raise ValueError("No layers available for plotting")
     n_panels = len(layers)
-    ncols = min(5, n_panels)
+    ncols = min(8, n_panels)
     nrows = math.ceil(n_panels / ncols)
-    plt.style.use("seaborn-v0_8")
-    fig, axes = plt.subplots(nrows, ncols, figsize=(1.6 * ncols, 1.4 * nrows), sharey=True)
+    
+    plt.style.use("default") 
+    plt.rcParams.update({'font.size': 6}) 
+    
+    fig, axes = plt.subplots(
+        nrows, 
+        ncols, 
+        figsize=(0.5 * ncols, 0.5 * nrows),
+        sharey=True
+    )
+    
     if nrows == 1 and ncols == 1:
         axes = np.array([[axes]])
     elif nrows == 1:
         axes = np.array([axes])
     elif ncols == 1:
         axes = np.array([[ax] for ax in axes])
+        
+    all_axes = axes.flatten()
+
     for panel_idx, layer in enumerate(layers):
-        row = panel_idx // ncols
-        col = panel_idx % ncols
-        ax = axes[row][col]
+        ax = all_axes[panel_idx]
         act_values = activation_cos.get(layer)
         weight_values = weight_cos.get(layer)
+        
         if act_values is None or weight_values is None:
             ax.axis("off")
             continue
+            
         ax.hist(
             weight_values,
             bins=bins,
             density=True,
             alpha=0.65,
             color="#4C72B0",
-            edgecolor="white",
-            linewidth=0.5,
             label="Weights",
         )
         ax.hist(
@@ -191,32 +202,43 @@ def _plot_histograms(
             density=True,
             alpha=0.55,
             color="#DD8452",
-            edgecolor="white",
-            linewidth=0.5,
             label="Activations",
         )
-        ax.set_title(f"Layer {layer}")
+        
+        ax.set_title(f"Layer {layer}", fontsize=6) 
         ax.set_xlim(-1.05, 1.05)
         ax.set_ylim(bottom=0)
-        ax.grid(alpha=0.3, linestyle="--", linewidth=0.5)
-        is_bottom_row = row == nrows - 1
-        ax.tick_params(labelbottom=is_bottom_row, bottom=is_bottom_row)
+        
+        ax.yaxis.set_major_locator(plt.MaxNLocator(4)) 
+        
+        is_bottom_row = panel_idx // ncols == nrows - 1
+
+        ax.tick_params(labelbottom=is_bottom_row, bottom=is_bottom_row, labelsize=7) 
+        
         if is_bottom_row:
             ax.set_xticks([-1.0, 0.0, 1.0])
             ax.set_xticklabels(["-1.0", "0.0", "1.0"])
-            ax.set_xlabel("Cos Sim")
+            ax.set_xlabel("Cos Sim", fontsize=6)
         else:
             ax.set_xticks([])
-        if col == 0:
-            ax.set_ylabel("Proportion")
-        if panel_idx == 0:
-            ax.legend()
-    for extra in range(n_panels, nrows * ncols):
-        row = extra // ncols
-        col = extra % ncols
-        axes[row][col].axis("off")
-    fig.supxlabel("Mean Act.")
-    fig.tight_layout()
+            
+        if panel_idx % ncols == 0:
+            ax.set_ylabel("Proportion", fontsize=6) 
+        else:
+            ax.tick_params(labelleft=False)
+
+    handles, labels = all_axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles, 
+        labels, 
+        loc='upper center', 
+        bbox_to_anchor=(0.5, 1.05), 
+        ncol=len(labels), 
+        frameon=False, 
+        fontsize=6 
+    )
+    
+    fig.tight_layout(rect=[0, 0.08, 1, 1.0])
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=300)
     plt.close(fig)
