@@ -289,26 +289,26 @@ def _plot_alpha_plane(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="Base checkpoint path")
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Base checkpoint path")
     parser.add_argument("--base-step", type=float, default=0.0, help="Step assigned to the base checkpoint")
     parser.add_argument(
         "--defense1",
         nargs="+",
-        default=[],
+        default=["step=/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO"],
         help="Sequence of checkpoints for defense 1 (format: step=path).",
     )
     parser.add_argument(
         "--defense2",
         nargs="+",
-        default=[],
+        default=["step=/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-DPO-NPO"],
         help="Sequence of checkpoints for defense 2 (format: step=path).",
     )
-    parser.add_argument("--defense1-name", default="Defense1", help="Label for the first defense trajectory")
-    parser.add_argument("--defense2-name", default="Defense2", help="Label for the second defense trajectory")
+    parser.add_argument("--defense1-name", default="DPO", help="Label for the first defense trajectory")
+    parser.add_argument("--defense2-name", default="NPO", help="Label for the second defense trajectory")
     parser.add_argument(
         "--layer-spec",
         action="append",
-        required=True,
+        default=["7:/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_safety.pt:/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_privacy.pt"],
         help="Per-layer direction spec formatted as layer:safe_path:priv_path",
     )
     parser.add_argument(
