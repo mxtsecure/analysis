@@ -23,10 +23,10 @@ from data.datasets import build_dual_dataset, RequestDataset
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="Base (pre-defense) model path")
-    parser.add_argument("--defense", required=True, help="Defense model path")
-    parser.add_argument("--normal", required=True, help="Path to D_norm JSONL")
-    parser.add_argument("--malicious", required=True, help="Path to D_mal JSONL")
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Base (pre-defense) model path")
+    parser.add_argument("--defense", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Defense model path")
+    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
+    parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
     parser.add_argument("--privacy-data", help="Optional path to D_priv JSONL")
     parser.add_argument(
         "--split",
