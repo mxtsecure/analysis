@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--layers",
-        default="all",
+        default=None,
         help="Comma separated list of layer indices to plot (default: 10 evenly spaced)",
     )
     parser.add_argument("--max-samples", type=int, default=512, help="Samples used for activations")
@@ -152,42 +152,55 @@ def _plot_histograms(
     weight_cos: Dict[int, np.ndarray],
     output: Path,
     *,
-    bins: np.ndarray = np.linspace(-1, 1, 21),  
+    bins: np.ndarray = np.linspace(-1, 1, 21),
 ) -> Path:
     if not layers:
         raise ValueError("No layers available for plotting")
+
     n_panels = len(layers)
-    ncols = min(8, n_panels)
+    ncols = min(5, n_panels)
     nrows = math.ceil(n_panels / ncols)
-    
-    plt.style.use("default") 
-    plt.rcParams.update({'font.size': 6}) 
-    
-    fig, axes = plt.subplots(
-        nrows, 
-        ncols, 
-        figsize=(0.5 * ncols, 0.5 * nrows),
-        sharey=True
+
+    plt.style.use("default")
+
+    # 小图用的小号字体 & 细线
+    plt.rcParams.update(
+        {
+            "font.size": 6,
+            "axes.linewidth": 0.4,
+            "xtick.labelsize": 5,
+            "ytick.labelsize": 5,
+        }
     )
-    
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(0.5 * ncols, 0.6 * nrows),  # 宽度保持 0.5，稍微给一点高度
+        sharex=True,
+        sharey=True,
+    )
+
+    # 统一成 2D -> 1D
     if nrows == 1 and ncols == 1:
         axes = np.array([[axes]])
     elif nrows == 1:
         axes = np.array([axes])
     elif ncols == 1:
         axes = np.array([[ax] for ax in axes])
-        
+
     all_axes = axes.flatten()
+    legend_ax = None
 
     for panel_idx, layer in enumerate(layers):
         ax = all_axes[panel_idx]
         act_values = activation_cos.get(layer)
         weight_values = weight_cos.get(layer)
-        
+
         if act_values is None or weight_values is None:
             ax.axis("off")
             continue
-            
+
         ax.hist(
             weight_values,
             bins=bins,
@@ -195,6 +208,7 @@ def _plot_histograms(
             alpha=0.65,
             color="#4C72B0",
             label="Weights",
+            edgecolor="none",
         )
         ax.hist(
             act_values,
@@ -203,47 +217,84 @@ def _plot_histograms(
             alpha=0.55,
             color="#DD8452",
             label="Activations",
+            edgecolor="none",
         )
-        
-        ax.set_title(f"Layer {layer}", fontsize=6) 
+
         ax.set_xlim(-1.05, 1.05)
         ax.set_ylim(bottom=0)
-        
-        ax.yaxis.set_major_locator(plt.MaxNLocator(4)) 
-        
-        is_bottom_row = panel_idx // ncols == nrows - 1
+        ax.yaxis.set_major_locator(plt.MaxNLocator(3))
 
-        ax.tick_params(labelbottom=is_bottom_row, bottom=is_bottom_row, labelsize=7) 
-        
+        # 只留左/下边框
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        ax.tick_params(axis="both", which="both", width=0.4, length=2)
+
+        # 在子图内部做一个很小的 layer 标记，而不是用 title
+        ax.text(
+            0.03,
+            0.95,
+            f"Layer {layer}",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=5,
+        )
+
+        # 只在底行显示 x 刻度
+        is_bottom_row = panel_idx // ncols == nrows - 1
         if is_bottom_row:
             ax.set_xticks([-1.0, 0.0, 1.0])
             ax.set_xticklabels(["-1.0", "0.0", "1.0"])
-            ax.set_xlabel("Cos Sim", fontsize=6)
         else:
             ax.set_xticks([])
-            
-        if panel_idx % ncols == 0:
-            ax.set_ylabel("Proportion", fontsize=6) 
-        else:
+            ax.tick_params(labelbottom=False)
+
+        # 只在每行第一个子图显示 y 刻度标签，其余只保留 tick 但不显示 label
+        if panel_idx % ncols != 0:
             ax.tick_params(labelleft=False)
 
-    handles, labels = all_axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles, 
-        labels, 
-        loc='upper center', 
-        bbox_to_anchor=(0.5, 1.05), 
-        ncol=len(labels), 
-        frameon=False, 
-        fontsize=6 
+        if legend_ax is None:
+            legend_ax = ax
+
+    # 多余的子图关掉
+    for extra_ax in all_axes[n_panels:]:
+        extra_ax.axis("off")
+
+    # 全局坐标轴标签（避免每个子图都写）
+    fig.text(0.5, 0.08, "Cos Sim", ha="center", va="center", fontsize=6)
+    fig.text(
+        0.01, 0.5, "Proportion", ha="left", va="center",
+        rotation="vertical", fontsize=6
     )
-    
-    fig.tight_layout(rect=[0, 0.08, 1, 1.0])
+
+    # 图例放在最下面
+    if legend_ax is not None:
+        handles, labels = legend_ax.get_legend_handles_labels()
+        fig.legend(
+            handles,
+            labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
+            ncol=len(labels),
+            frameon=False,
+            fontsize=6,
+        )
+
+    # 手动控制子图间距，避免 tight_layout 在小图上发疯
+    fig.subplots_adjust(
+        left=0.04,
+        right=0.99,
+        top=0.9,
+        bottom=0.18,
+        wspace=0.2,
+        hspace=0.25,
+    )
+
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=300)
+    fig.savefig(output, dpi=400)
     plt.close(fig)
     return output
-
 
 def _pearson_by_layer(
     layers: Sequence[int],
