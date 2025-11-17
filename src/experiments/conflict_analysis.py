@@ -104,9 +104,9 @@ def plot_concept_conflict(
         similarity: Cosine similarity between the two concepts.
         save_path: Destination for the saved figure.
         baseline_samples: Optional baseline activations of shape ``[N, D]`` (``N`` inputs,
-            ``D`` neurons). When provided, the visualization switches to a neuron-centric
-            plot that scatters the base model activations for each neuron and overlays the
-            defended activations.
+            ``D`` neurons). When provided, the visualization switches to a two-panel,
+            neuron-centric plot that scatters the base model activations for each neuron
+            on the left and overlays the defended activations/offsets on the right.
         safety_samples: Optional activations from the safety defense aligned with
             ``baseline_samples`` (same ``N`` and ``D``).
         privacy_samples: Optional activations from the privacy defense aligned with
@@ -145,29 +145,14 @@ def plot_concept_conflict(
     else:
         plot_mode = "concepts"
 
-    baseline_proj = _project(baseline_tensor)
-    safety_proj = _project(safety_tensor)
-    privacy_proj = _project(privacy_tensor)
-
-    tensors_for_limit = [concept_coords]
-    tensors_for_limit.extend(
-        tensor for tensor in (baseline_proj, safety_proj, privacy_proj) if tensor is not None
-    )
-    limit = 1.0
-    if tensors_for_limit:
-        limit = max(float(tensor.abs().max().item()) for tensor in tensors_for_limit if tensor.numel())
-        limit = max(limit, 1e-3)
-    limit *= 1.25
-
     try:
         style_ctx = plt.style.context("seaborn-v0_8-whitegrid")
     except OSError:
         style_ctx = nullcontext()
 
     with style_ctx:
-        fig, ax = plt.subplots(figsize=(7.5, 7))
-
         if plot_mode == "concepts":
+            fig, ax = plt.subplots(figsize=(7.5, 7))
             basis_inputs = stack_concept_directions(safety, privacy)
             basis = compute_projection_basis(basis_inputs)
 
@@ -404,6 +389,8 @@ def plot_concept_conflict(
 
         else:
             assert baseline_tensor is not None
+            fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.5))
+            ax_baseline, ax_defense = axes
 
             def _transpose(tensor: torch.Tensor | None) -> torch.Tensor | None:
                 return None if tensor is None else tensor.T.contiguous()
@@ -468,31 +455,65 @@ def plot_concept_conflict(
             neuron_categories = [_category(val.item()) for val in baseline_means]
             scatter_colors = [category_colors[cat] for cat in neuron_categories]
 
-            legend_handles: list[Line2D] = []
-            legend_labels: list[str] = []
-
-            baseline_scatter = ax.scatter(
+            # Left subplot: baseline activations grouped by magnitude bucket.
+            baseline_scatter = ax_baseline.scatter(
                 baseline_proj[:, 0],
                 baseline_proj[:, 1],
                 c=scatter_colors,
-                s=26,
-                alpha=0.85,
+                s=30,
+                alpha=0.9,
                 marker="o",
                 edgecolors="#fdfdfd",
                 linewidths=0.6,
             )
-            # Add categorical legend entries
+            base_handles: list[Line2D] = []
+            base_labels: list[str] = []
             for cat, color in category_colors.items():
                 if cat not in neuron_categories:
                     continue
-                legend_handles.append(Line2D([0], [0], marker="o", color="none", markerfacecolor=color, markeredgecolor="#fdfdfd", markersize=7))
+                handle = Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor=color,
+                    markeredgecolor="#fdfdfd",
+                    markersize=7,
+                )
                 if cat == "strong":
                     label = "强激活 (Top 20%)"
                 elif cat == "moderate":
                     label = "中等激活"
                 else:
-                    label = "被抑制/低激活"
-                legend_labels.append(label)
+                    label = "低/被抑制"
+                base_handles.append(handle)
+                base_labels.append(label)
+            ax_baseline.legend(base_handles, base_labels, loc="upper right", frameon=False)
+
+            # Right subplot: show defenses relative to baseline cloud.
+            legend_handles: list[Line2D] = []
+            legend_labels: list[str] = []
+            baseline_cloud = ax_defense.scatter(
+                baseline_proj[:, 0],
+                baseline_proj[:, 1],
+                color="#b0b0b0",
+                s=20,
+                alpha=0.25,
+                label="Baseline cloud",
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#b0b0b0",
+                    markeredgecolor="none",
+                    alpha=0.5,
+                    markersize=7,
+                )
+            )
+            legend_labels.append("基线散点")
 
             def _plot_defense(
                 defense_proj: torch.Tensor | None,
@@ -503,25 +524,28 @@ def plot_concept_conflict(
             ) -> torch.Tensor | None:
                 if defense_proj is None:
                     return None
-                ax.scatter(
+                ax_defense.scatter(
                     defense_proj[:, 0],
                     defense_proj[:, 1],
                     color=color,
-                    s=35,
+                    s=38,
                     marker=marker,
                     alpha=0.9,
                     edgecolors="#fdfdfd",
-                    linewidths=0.6,
+                    linewidths=0.7,
                 )
                 for i in range(defense_proj.shape[0]):
-                    ax.plot(
-                        [float(baseline_proj[i, 0]), float(defense_proj[i, 0])],
-                        [float(baseline_proj[i, 1]), float(defense_proj[i, 1])],
-                        linestyle=linestyle,
+                    arrow = FancyArrowPatch(
+                        (float(baseline_proj[i, 0]), float(baseline_proj[i, 1])),
+                        (float(defense_proj[i, 0]), float(defense_proj[i, 1])),
+                        arrowstyle="->",
+                        mutation_scale=9,
                         linewidth=0.9,
+                        linestyle=linestyle,
                         color=color,
-                        alpha=0.6,
+                        alpha=0.65,
                     )
+                    ax_defense.add_patch(arrow)
                 legend_handles.append(
                     Line2D([0, 1], [0, 0], color=color, linestyle=linestyle, linewidth=1.2)
                 )
@@ -543,7 +567,11 @@ def plot_concept_conflict(
                 linestyle=":",
             )
 
-            def _plot_mean_shift(disp: torch.Tensor | None, color: str, label: str):
+            def _plot_mean_shift(
+                disp: torch.Tensor | None,
+                color: str,
+                label: str,
+            ) -> torch.Tensor | None:
                 if disp is None:
                     return None
                 mean_vec = disp.mean(dim=0)
@@ -551,14 +579,14 @@ def plot_concept_conflict(
                     (0.0, 0.0),
                     (float(mean_vec[0]), float(mean_vec[1])),
                     arrowstyle="-|>",
-                    mutation_scale=22,
-                    linewidth=3.2,
+                    mutation_scale=24,
+                    linewidth=3.3,
                     color=color,
-                    alpha=0.85,
+                    alpha=0.9,
                 )
-                ax.add_patch(arrow)
+                ax_defense.add_patch(arrow)
                 legend_handles.append(
-                    Line2D([0, 1], [0, 0], color=color, linewidth=3.2, marker=">", markersize=7)
+                    Line2D([0, 1], [0, 0], color=color, linewidth=3.3, marker=">", markersize=7)
                 )
                 legend_labels.append(label)
                 return mean_vec
@@ -572,7 +600,7 @@ def plot_concept_conflict(
                 if norm_prod > 0:
                     cos_val = max(-1.0, min(1.0, dot / norm_prod))
                     angle = math.degrees(math.acos(cos_val))
-                    ax.annotate(
+                    ax_defense.annotate(
                         f"夹角 ≈ {angle:.1f}°",
                         xy=(0.02, 0.05),
                         xycoords="axes fraction",
@@ -591,16 +619,20 @@ def plot_concept_conflict(
             )
             limit = max(limit * 1.2, 1e-3)
 
-            ax.set_xlabel("激活分量 1", fontsize=12)
-            ax.set_ylabel("激活分量 2", fontsize=12)
-            ax.set_title("每个神经元的激活变化", fontsize=14, fontweight="bold")
-            ax.set_xlim(-limit, limit)
-            ax.set_ylim(-limit, limit)
-            ax.set_aspect("equal", "box")
-            ax.axhline(0, color="#aaaaaa", linewidth=1.0, alpha=0.5)
-            ax.axvline(0, color="#aaaaaa", linewidth=1.0, alpha=0.5)
-            ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.35)
-            ax.legend(legend_handles, legend_labels, loc="upper right", frameon=False)
+            def _style_axis(axis, title: str):
+                axis.set_xlabel("激活分量 1", fontsize=12)
+                axis.set_ylabel("激活分量 2", fontsize=12)
+                axis.set_title(title, fontsize=14, fontweight="bold")
+                axis.set_xlim(-limit, limit)
+                axis.set_ylim(-limit, limit)
+                axis.set_aspect("equal", "box")
+                axis.axhline(0, color="#aaaaaa", linewidth=1.0, alpha=0.45)
+                axis.axvline(0, color="#aaaaaa", linewidth=1.0, alpha=0.45)
+                axis.grid(True, linestyle="--", linewidth=0.8, alpha=0.3)
+
+            _style_axis(ax_baseline, "Base LLM 激活分布")
+            _style_axis(ax_defense, "防御后位移趋势")
+            ax_defense.legend(legend_handles, legend_labels, loc="upper right", frameon=False)
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
