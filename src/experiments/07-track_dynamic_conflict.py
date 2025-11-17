@@ -41,6 +41,7 @@ class CheckpointSpec:
     step: float
     label: str
     defense: str
+    baseline: str
 
 
 def _infer_layer_names(model_path: str | Path) -> List[str]:
@@ -144,7 +145,11 @@ def _derive_defense_label(paths: Sequence[str], fallback: str) -> str:
 
 
 def _build_simple_checkpoint_list(
-    paths: Sequence[str], defense: str, start_step: float, step_increment: float
+    paths: Sequence[str],
+    defense: str,
+    start_step: float,
+    step_increment: float,
+    baseline: str,
 ) -> tuple[List[CheckpointSpec], float]:
     entries = []
     current_step = start_step
@@ -152,7 +157,9 @@ def _build_simple_checkpoint_list(
         current_step += step_increment
         p = Path(path)
         entries.append(
-            CheckpointSpec(path=p, step=current_step, label=p.name, defense=defense)
+            CheckpointSpec(
+                path=p, step=current_step, label=p.name, defense=defense, baseline=baseline
+            )
         )
     return entries, current_step
 
@@ -276,7 +283,7 @@ def _plot_alpha_curves(
         ax.plot(
             subset["step"],
             subset["alpha_safe"],
-            label=f"{defense} α_safe",
+            label=f"{defense} α_safe (vs Base)",
             color=color,
             linestyle="-",
             marker="o",
@@ -284,12 +291,35 @@ def _plot_alpha_curves(
         ax.plot(
             subset["step"],
             subset["alpha_priv"],
-            label=f"{defense} α_priv",
+            label=f"{defense} α_priv (vs Base)",
             color=color,
             linestyle="--",
             marker="o",
             alpha=0.8,
         )
+        for baseline in subset["baseline"].unique():
+            if baseline == "Base":
+                continue
+            rel = subset[subset["baseline"] == baseline]
+            if rel.empty:
+                continue
+            ax.plot(
+                rel["step"],
+                rel["alpha_safe_relative"],
+                label=f"{defense} α_safe (vs {baseline})",
+                color=color,
+                linestyle=":",
+                marker="s",
+            )
+            ax.plot(
+                rel["step"],
+                rel["alpha_priv_relative"],
+                label=f"{defense} α_priv (vs {baseline})",
+                color=color,
+                linestyle=(0, (3, 1, 1, 1)),
+                marker="s",
+                alpha=0.9,
+            )
     ax.set_title(f"Layer {layer}: projection coefficients vs step")
     ax.set_xlabel("Step")
     ax.set_ylabel("Projection coefficient")
@@ -323,7 +353,7 @@ def _plot_alpha_plane(
             subset["alpha_priv"],
             color=color,
             marker="o",
-            label=f"{defense} trajectory",
+            label=f"{defense} trajectory (vs Base)",
         )
         for _, row in subset.iterrows():
             ax.annotate(
@@ -333,6 +363,29 @@ def _plot_alpha_plane(
                 xytext=(4, 4),
                 fontsize=7,
             )
+        for baseline in subset["baseline"].unique():
+            if baseline == "Base":
+                continue
+            rel = subset[subset["baseline"] == baseline]
+            if rel.empty:
+                continue
+            ax.plot(
+                rel["alpha_safe_relative"],
+                rel["alpha_priv_relative"],
+                color=color,
+                marker="s",
+                linestyle=":",
+                label=f"{defense} trajectory (vs {baseline})",
+            )
+            for _, row in rel.iterrows():
+                ax.annotate(
+                    f"{row['step']:.0f}",
+                    (row["alpha_safe_relative"], row["alpha_priv_relative"]),
+                    textcoords="offset points",
+                    xytext=(4, -6),
+                    fontsize=7,
+                    color=color,
+                )
     ax.set_xlabel("α_safe")
     ax.set_ylabel("α_priv")
     ax.set_title(f"Layer {layer}: weight trajectory in conflict plane")
@@ -403,23 +456,52 @@ def _prepare_base_vectors(
     return base_vectors, layer_param_names
 
 
+def _prepare_baseline_vectors(
+    reference_paths: Mapping[str, Path],
+    layer_param_names: Mapping[str, Sequence[str]],
+    *,
+    torch_dtype: torch.dtype | None,
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    include_keys = sorted({name for names in layer_param_names.values() for name in names})
+    baseline_vectors: Dict[str, Dict[str, torch.Tensor]] = {}
+    for label, path in reference_paths.items():
+        state = _load_checkpoint_state(path, include=include_keys, torch_dtype=torch_dtype)
+        layer_vectors: Dict[str, torch.Tensor] = {}
+        for layer_name, names in layer_param_names.items():
+            layer_vectors[layer_name] = _flatten_parameters(state, names)
+        baseline_vectors[label] = layer_vectors
+        del state
+    return baseline_vectors
+
+
 def _aggregate_records(
     checkpoints: Sequence[CheckpointSpec],
     base_vectors: Mapping[str, torch.Tensor],
     layer_param_names: Mapping[str, Sequence[str]],
     layer_specs: Mapping[str, LayerDirections],
+    baseline_vectors: Mapping[str, Mapping[str, torch.Tensor]],
     torch_dtype: torch.dtype | None,
 ) -> List[dict]:
     include_keys = sorted({name for names in layer_param_names.values() for name in names})
     records: List[dict] = []
     for spec in checkpoints:
         state = _load_checkpoint_state(spec.path, include=include_keys, torch_dtype=torch_dtype)
+        if spec.baseline not in baseline_vectors:
+            raise KeyError(f"Baseline '{spec.baseline}' missing from provided vectors")
         for layer_name, names in layer_param_names.items():
             delta = _compute_delta(base_vectors[layer_name], state, names)
             layer_dir = layer_specs[layer_name]
             alpha_safe, alpha_priv, delta_norm, angle = _compute_metrics(
                 delta, layer_dir.safe_vector, layer_dir.priv_vector
             )
+            baseline_reference = baseline_vectors[spec.baseline]
+            relative_delta = _compute_delta(baseline_reference[layer_name], state, names)
+            (
+                alpha_safe_rel,
+                alpha_priv_rel,
+                delta_norm_rel,
+                angle_rel,
+            ) = _compute_metrics(relative_delta, layer_dir.safe_vector, layer_dir.priv_vector)
             records.append(
                 {
                     "layer": layer_name,
@@ -427,10 +509,15 @@ def _aggregate_records(
                     "step": spec.step,
                     "checkpoint": str(spec.path),
                     "label": spec.label,
+                    "baseline": spec.baseline,
                     "alpha_safe": alpha_safe,
                     "alpha_priv": alpha_priv,
                     "delta_norm": delta_norm,
                     "angle_deg": angle,
+                    "alpha_safe_relative": alpha_safe_rel,
+                    "alpha_priv_relative": alpha_priv_rel,
+                    "delta_norm_relative": delta_norm_rel,
+                    "angle_deg_relative": angle_rel,
                 }
             )
         del state
@@ -472,6 +559,7 @@ def run(args: argparse.Namespace) -> None:
     base_vectors, layer_param_names = _prepare_base_vectors(
         Path(args.base), layer_specs, torch_dtype=None
     )
+    baseline_reference_paths: Dict[str, Path] = {}
     defense_order: List[str] = []
     checkpoints: List[CheckpointSpec] = []
     next_auto_step = 0.0
@@ -479,17 +567,33 @@ def run(args: argparse.Namespace) -> None:
     if args.defense1:
         defense1_label = _derive_defense_label(args.defense1, "Defense1")
         defense_order.append(defense1_label)
+        defense1_anchor_path = Path(args.defense1[-1])
+        baseline_reference_paths[defense1_label] = defense1_anchor_path
         specs, next_auto_step = _build_simple_checkpoint_list(
-            args.defense1, defense1_label, next_auto_step, step_increment
+            args.defense1,
+            defense1_label,
+            next_auto_step,
+            step_increment,
+            baseline="Base",
         )
         checkpoints.extend(specs)
     if args.defense2:
         defense2_label = _derive_defense_label(args.defense2, "Defense2")
         defense_order.append(defense2_label)
         specs, next_auto_step = _build_simple_checkpoint_list(
-            args.defense2, defense2_label, next_auto_step, step_increment
+            args.defense2,
+            defense2_label,
+            next_auto_step,
+            step_increment,
+            baseline=defense1_label,
         )
         checkpoints.extend(specs)
+    baseline_vectors: Dict[str, Dict[str, torch.Tensor]] = {"Base": base_vectors}
+    if baseline_reference_paths:
+        extra = _prepare_baseline_vectors(
+            baseline_reference_paths, layer_param_names, torch_dtype=None
+        )
+        baseline_vectors.update(extra)
     args.output.mkdir(parents=True, exist_ok=True)
     records: List[dict] = [
         {
@@ -498,10 +602,15 @@ def run(args: argparse.Namespace) -> None:
             "step": 0.0,
             "checkpoint": str(Path(args.base)),
             "label": Path(args.base).name,
+            "baseline": "Base",
             "alpha_safe": 0.0,
             "alpha_priv": 0.0,
             "delta_norm": 0.0,
             "angle_deg": 0.0,
+            "alpha_safe_relative": 0.0,
+            "alpha_priv_relative": 0.0,
+            "delta_norm_relative": 0.0,
+            "angle_deg_relative": 0.0,
         }
         for layer_name in layer_param_names
     ]
@@ -511,6 +620,7 @@ def run(args: argparse.Namespace) -> None:
             base_vectors,
             layer_param_names,
             layer_map,
+            baseline_vectors,
             torch_dtype=None,
         )
     )
