@@ -91,8 +91,8 @@ def plot_conflict_projection(
             weight="bold",
         )
 
-    _draw_shift(base_safety_center, defense_safety_center, "tab:orange", "Safety shift")
-    _draw_shift(base_privacy_center, defense_privacy_center, "tab:red", "Privacy shift")
+    _draw_shift(base_safety_center, defense_safety_center, "black", "Safety shift")
+    _draw_shift(base_privacy_center, defense_privacy_center, "tab:purple", "Privacy shift")
 
     ax.set_xlabel("Projection dimension 1")
     ax.set_ylabel("Projection dimension 2")
