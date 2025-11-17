@@ -96,9 +96,15 @@ def _parse_layer_specs(values: Sequence[str]) -> List[LayerDirections]:
     return specs
 
 
-def _parse_checkpoint_list(values: Sequence[str], defense: str) -> List[CheckpointSpec]:
+def _parse_checkpoint_list(
+    values: Sequence[str],
+    defense: str,
+    next_auto_step: float,
+    step_increment: float,
+) -> tuple[List[CheckpointSpec], float]:
     specs: List[CheckpointSpec] = []
-    for idx, raw in enumerate(values):
+    current_auto_step = next_auto_step
+    for raw in values:
         entry = raw.strip()
         if not entry:
             continue
@@ -108,13 +114,15 @@ def _parse_checkpoint_list(values: Sequence[str], defense: str) -> List[Checkpoi
                 step = float(step_str)
             except ValueError as exc:
                 raise ValueError(f"Invalid step value '{step_str}' in '{entry}'") from exc
+            current_auto_step = step + step_increment
         else:
             path_str = entry
-            step = float(idx + 1)
+            step = current_auto_step
+            current_auto_step += step_increment
         path = Path(path_str)
         label = path.name
         specs.append(CheckpointSpec(path=path, step=step, label=label, defense=defense))
-    return specs
+    return specs, current_auto_step
 
 
 def _select_layer_parameters(state_dict_keys: Iterable[str], layer: str) -> List[str]:
@@ -198,11 +206,10 @@ def _plot_alpha_curves(
     output: Path,
     defense_order: Sequence[str],
 ) -> None:
-    colors = {
-        "Base": "#6c757d",
-        defense_order[0]: "#1f77b4",
-        defense_order[1]: "#ff7f0e",
-    }
+    colors = {"Base": "#6c757d"}
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    for idx, defense in enumerate(defense_order):
+        colors[defense] = palette[idx % len(palette)]
     fig, ax = plt.subplots(figsize=(6.5, 4.0))
     ax.axhline(0, color="#dddddd", linewidth=1.0)
     for defense in ["Base", *defense_order]:
@@ -243,11 +250,10 @@ def _plot_alpha_plane(
     output: Path,
     defense_order: Sequence[str],
 ) -> None:
-    colors = {
-        "Base": "#6c757d",
-        defense_order[0]: "#1f77b4",
-        defense_order[1]: "#ff7f0e",
-    }
+    colors = {"Base": "#6c757d"}
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    for idx, defense in enumerate(defense_order):
+        colors[defense] = palette[idx % len(palette)]
     fig, ax = plt.subplots(figsize=(5.0, 5.0))
     ax.axhline(0, color="#dddddd", linewidth=1.0)
     ax.axvline(0, color="#dddddd", linewidth=1.0)
@@ -310,6 +316,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/07-dynamic_conflict"),
         help="Directory where CSV and plots will be stored",
+    )
+    parser.add_argument(
+        "--step-increment",
+        type=float,
+        default=1.0,
+        help=(
+            "Increment applied to automatically assigned step values when explicit"
+            " steps are omitted"
+        ),
     )
     parser.add_argument(
         "--torch-dtype",
@@ -402,12 +417,23 @@ def run(args: argparse.Namespace) -> None:
     base_vectors, layer_param_names = _prepare_base_vectors(
         Path(args.base), layer_specs, torch_dtype
     )
-    if not args.defense1 or not args.defense2:
-        raise ValueError("Both --defense1 and --defense2 lists must be provided")
-    defense_order: List[str] = [args.defense1_name, args.defense2_name]
+    if not args.defense1 and not args.defense2:
+        raise ValueError("At least one defense checkpoint list must be provided")
+    defense_order: List[str] = []
     checkpoints: List[CheckpointSpec] = []
-    checkpoints.extend(_parse_checkpoint_list(args.defense1, args.defense1_name))
-    checkpoints.extend(_parse_checkpoint_list(args.defense2, args.defense2_name))
+    next_auto_step = float(args.base_step) + float(args.step_increment)
+    if args.defense1:
+        defense_order.append(args.defense1_name)
+        specs, next_auto_step = _parse_checkpoint_list(
+            args.defense1, args.defense1_name, next_auto_step, float(args.step_increment)
+        )
+        checkpoints.extend(specs)
+    if args.defense2:
+        defense_order.append(args.defense2_name)
+        specs, next_auto_step = _parse_checkpoint_list(
+            args.defense2, args.defense2_name, next_auto_step, float(args.step_increment)
+        )
+        checkpoints.extend(specs)
     args.output.mkdir(parents=True, exist_ok=True)
     records: List[dict] = [
         {
