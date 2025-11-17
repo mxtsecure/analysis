@@ -14,9 +14,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from transformers import AutoModelForCausalLM
+from torch.utils.data import DataLoader
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from analysis.concept_vectors import aggregate_difference
+from data.datasets import build_dual_dataset
+from models.activations import compute_activation_difference, forward_dataset
 
 
 @dataclass
@@ -38,91 +43,118 @@ class CheckpointSpec:
     defense: str
 
 
-def _normalize_layer_name(raw: str) -> str:
-    stripped = raw.strip()
-    if not stripped:
-        raise ValueError("Layer identifiers must be non-empty")
-    if stripped.isdigit():
-        return f"model.layers.{stripped}"
-    return stripped
-
-
-def _load_direction_vector(path: Path) -> torch.Tensor:
-    if not path.exists():
-        raise FileNotFoundError(f"Direction file not found: {path}")
-    suffix = path.suffix.lower()
-    if suffix == ".npy":
-        array = np.load(path)
-        tensor = torch.from_numpy(array)
-    elif suffix in {".pt", ".pth"}:
-        obj = torch.load(path, map_location="cpu", weights_only=False)
-        if isinstance(obj, torch.Tensor):
-            tensor = obj
-        elif hasattr(obj, "direction"):
-            tensor = getattr(obj, "direction")
-        elif isinstance(obj, Mapping) and "direction" in obj:
-            tensor = obj["direction"]
-        else:
-            raise ValueError(f"Unsupported tensor container stored in {path}")
-    else:
-        raise ValueError(f"Unsupported direction file extension: {path.suffix}")
-    tensor = tensor.detach().cpu().to(torch.float64).flatten()
-    norm = torch.norm(tensor)
-    if norm.item() == 0:
-        raise ValueError(f"Direction vector from {path} is zero")
-    return tensor / norm
-
-
-def _parse_layer_specs(values: Sequence[str]) -> List[LayerDirections]:
-    if not values:
-        raise ValueError("At least one --layer-spec entry is required")
-    specs: List[LayerDirections] = []
-    for raw in values:
-        parts = [part.strip() for part in raw.split(":") if part.strip()]
-        if len(parts) != 3:
-            raise ValueError(
-                "--layer-spec expects entries formatted as 'layer:safe_path:priv_path'"
-            )
-        layer = _normalize_layer_name(parts[0])
-        safe_vector = _load_direction_vector(Path(parts[1]))
-        priv_vector = _load_direction_vector(Path(parts[2]))
-        specs.append(
-            LayerDirections(
-                name=layer,
-                safe_vector=safe_vector,
-                priv_vector=priv_vector,
-            )
+def _infer_layer_names(model_path: str | Path) -> List[str]:
+    config = AutoConfig.from_pretrained(model_path)
+    total_layers = getattr(config, "num_hidden_layers", None)
+    if total_layers is None:
+        raise ValueError(
+            "Unable to determine transformer layer count from the provided base model"
         )
-    return specs
+    return [f"model.layers.{idx}" for idx in range(int(total_layers))]
 
 
-def _parse_checkpoint_list(
-    values: Sequence[str],
-    defense: str,
-    next_auto_step: float,
-    step_increment: float,
+def _ensure_activation_mapping(value, layers: Sequence[str]):
+    if isinstance(value, dict):
+        return value
+    if len(layers) != 1:
+        raise ValueError(
+            "Expected multiple layers to yield an activation mapping but received a single tensor"
+        )
+    return {layers[0]: value}
+
+
+def _forward_with_hooks(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    layers: Sequence[str],
+    device: torch.device,
+    description: str,
+    *,
+    max_batches: int = 4,
+):
+    activations = forward_dataset(
+        model,
+        dataloader,
+        layers,
+        device,
+        description,
+        max_batches=max_batches,
+    )
+    return _ensure_activation_mapping(activations, layers)
+
+
+def _compute_concept_vectors(
+    base_path: str | Path,
+    defense_path: str | Path,
+    dataloader: DataLoader,
+    layers: Sequence[str],
+    device: torch.device,
+    description: str,
+    *,
+    max_batches: int = 4,
+) -> Dict[str, torch.Tensor]:
+    base_model = AutoModelForCausalLM.from_pretrained(base_path, torch_dtype=torch.float16).to(
+        device
+    )
+    defense_model = AutoModelForCausalLM.from_pretrained(
+        defense_path, torch_dtype=torch.float16
+    ).to(device)
+    try:
+        base_acts = _forward_with_hooks(
+            base_model,
+            dataloader,
+            layers,
+            device,
+            f"{description} (base)",
+            max_batches=max_batches,
+        )
+        defense_acts = _forward_with_hooks(
+            defense_model,
+            dataloader,
+            layers,
+            device,
+            f"{description} (defense)",
+            max_batches=max_batches,
+        )
+    finally:
+        base_model.cpu()
+        defense_model.cpu()
+        del base_model
+        del defense_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    vectors: Dict[str, torch.Tensor] = {}
+    for layer in layers:
+        delta = compute_activation_difference(base_acts[layer], defense_acts[layer])
+        concept = aggregate_difference(delta, method="mean")
+        direction = concept.direction.detach().cpu().to(torch.float64)
+        norm = torch.norm(direction)
+        if norm.item() == 0:
+            raise ValueError(f"Concept vector for layer {layer} is zero")
+        vectors[layer] = direction / norm
+    return vectors
+
+
+def _derive_defense_label(paths: Sequence[str], fallback: str) -> str:
+    for raw in reversed(paths):
+        name = Path(raw).name
+        if name:
+            return name
+    return fallback
+
+
+def _build_simple_checkpoint_list(
+    paths: Sequence[str], defense: str, start_step: float, step_increment: float
 ) -> tuple[List[CheckpointSpec], float]:
-    specs: List[CheckpointSpec] = []
-    current_auto_step = next_auto_step
-    for raw in values:
-        entry = raw.strip()
-        if not entry:
-            continue
-        if "=" in entry:
-            step_str, path_str = entry.split("=", 1)
-            try:
-                step = float(step_str)
-            except ValueError as exc:
-                raise ValueError(f"Invalid step value '{step_str}' in '{entry}'") from exc
-            current_auto_step = step + step_increment
-        else:
-            path_str = entry
-            step = current_auto_step
-            current_auto_step += step_increment
-        path = Path(path_str)
-        label = path.name
-        specs.append(CheckpointSpec(path=path, step=step, label=label, defense=defense))
-    return specs, current_auto_step
+    entries = []
+    current_step = start_step
+    for path in paths:
+        current_step += step_increment
+        p = Path(path)
+        entries.append(
+            CheckpointSpec(path=p, step=current_step, label=p.name, defense=defense)
+        )
+    return entries, current_step
 
 
 def _select_layer_parameters(state_dict_keys: Iterable[str], layer: str) -> List[str]:
@@ -132,6 +164,30 @@ def _select_layer_parameters(state_dict_keys: Iterable[str], layer: str) -> List
     if not selected:
         raise ValueError(f"Layer '{layer}' was not found in the checkpoint state dict")
     return selected
+
+
+def _build_risk_dataloaders(
+    risk_dir: Path,
+    tokenizer,
+    batch_size: int = 4,
+) -> tuple[DataLoader, DataLoader]:
+    malicious_path = risk_dir / "safety.jsonl"
+    privacy_path = risk_dir / "privacy.jsonl"
+    normal_path = risk_dir / "normal.jsonl"
+    for path in [normal_path, malicious_path, privacy_path]:
+        if not path.exists():
+            raise FileNotFoundError(f"Required dataset file not found: {path}")
+    datasets = build_dual_dataset(
+        normal_path=normal_path,
+        malicious_path=malicious_path,
+        tokenizer=tokenizer,
+        privacy_path=privacy_path,
+    )
+    if datasets.privacy is None:
+        raise ValueError("Privacy dataset is required to compute concept vectors")
+    malicious_loader = DataLoader(datasets.malicious, batch_size=batch_size)
+    privacy_loader = DataLoader(datasets.privacy, batch_size=batch_size)
+    return malicious_loader, privacy_loader
 
 
 def _flatten_parameters(state: Mapping[str, torch.Tensor], names: Sequence[str]) -> torch.Tensor:
@@ -289,61 +345,32 @@ def _plot_alpha_plane(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Base checkpoint path")
-    parser.add_argument("--base-step", type=float, default=0.0, help="Step assigned to the base checkpoint")
+    parser.add_argument("--base", required=True, help="Base checkpoint path")
     parser.add_argument(
         "--defense1",
         nargs="+",
-        default=["step=/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO"],
-        help="Sequence of checkpoints for defense 1 (format: step=path).",
+        required=True,
+        help="List of checkpoints belonging to the first defense trajectory",
     )
     parser.add_argument(
         "--defense2",
         nargs="+",
-        default=["step=/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-DPO-NPO"],
-        help="Sequence of checkpoints for defense 2 (format: step=path).",
+        required=True,
+        help="List of checkpoints belonging to the second defense trajectory",
     )
-    parser.add_argument("--defense1-name", default="DPO", help="Label for the first defense trajectory")
-    parser.add_argument("--defense2-name", default="NPO", help="Label for the second defense trajectory")
     parser.add_argument(
-        "--layer-spec",
-        action="append",
-        default=["7:/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_safety.pt:/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_privacy.pt"],
-        help="Per-layer direction spec formatted as layer:safe_path:priv_path",
+        "--risk-data",
+        type=Path,
+        required=True,
+        help="Directory containing risk datasets (normal.jsonl, safety.jsonl, privacy.jsonl)",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/07-dynamic_conflict"),
+        default=Path("results/dynamic_conflict"),
         help="Directory where CSV and plots will be stored",
     )
-    parser.add_argument(
-        "--step-increment",
-        type=float,
-        default=1.0,
-        help=(
-            "Increment applied to automatically assigned step values when explicit"
-            " steps are omitted"
-        ),
-    )
-    parser.add_argument(
-        "--torch-dtype",
-        choices=["float16", "float32", "bfloat16", "auto"],
-        default="auto",
-        help="Optional torch dtype override when loading checkpoints",
-    )
     return parser.parse_args()
-
-
-def _resolve_torch_dtype(name: str) -> torch.dtype | None:
-    if name == "auto":
-        return None
-    mapping = {
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-        "float32": torch.float32,
-    }
-    return mapping[name]
 
 
 def _prepare_base_vectors(
@@ -411,27 +438,56 @@ def _aggregate_records(
 
 
 def run(args: argparse.Namespace) -> None:
-    torch_dtype = _resolve_torch_dtype(args.torch_dtype)
-    layer_specs = _parse_layer_specs(args.layer_spec)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    layer_names = _infer_layer_names(args.base)
+    tokenizer = AutoTokenizer.from_pretrained(args.base)
+    malicious_loader, privacy_loader = _build_risk_dataloaders(args.risk_data, tokenizer)
+    safety_anchor = args.defense1[-1]
+    privacy_anchor = args.defense2[-1]
+    safety_vectors = _compute_concept_vectors(
+        args.base,
+        safety_anchor,
+        malicious_loader,
+        layer_names,
+        device,
+        "Safety risk dataset",
+    )
+    privacy_vectors = _compute_concept_vectors(
+        args.base,
+        privacy_anchor,
+        privacy_loader,
+        layer_names,
+        device,
+        "Privacy risk dataset",
+    )
+    layer_specs = [
+        LayerDirections(
+            name=layer,
+            safe_vector=safety_vectors[layer],
+            priv_vector=privacy_vectors[layer],
+        )
+        for layer in layer_names
+    ]
     layer_map = {spec.name: spec for spec in layer_specs}
     base_vectors, layer_param_names = _prepare_base_vectors(
-        Path(args.base), layer_specs, torch_dtype
+        Path(args.base), layer_specs, torch_dtype=None
     )
-    if not args.defense1 and not args.defense2:
-        raise ValueError("At least one defense checkpoint list must be provided")
     defense_order: List[str] = []
     checkpoints: List[CheckpointSpec] = []
-    next_auto_step = float(args.base_step) + float(args.step_increment)
+    next_auto_step = 0.0
+    step_increment = 1.0
     if args.defense1:
-        defense_order.append(args.defense1_name)
-        specs, next_auto_step = _parse_checkpoint_list(
-            args.defense1, args.defense1_name, next_auto_step, float(args.step_increment)
+        defense1_label = _derive_defense_label(args.defense1, "Defense1")
+        defense_order.append(defense1_label)
+        specs, next_auto_step = _build_simple_checkpoint_list(
+            args.defense1, defense1_label, next_auto_step, step_increment
         )
         checkpoints.extend(specs)
     if args.defense2:
-        defense_order.append(args.defense2_name)
-        specs, next_auto_step = _parse_checkpoint_list(
-            args.defense2, args.defense2_name, next_auto_step, float(args.step_increment)
+        defense2_label = _derive_defense_label(args.defense2, "Defense2")
+        defense_order.append(defense2_label)
+        specs, next_auto_step = _build_simple_checkpoint_list(
+            args.defense2, defense2_label, next_auto_step, step_increment
         )
         checkpoints.extend(specs)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -439,7 +495,7 @@ def run(args: argparse.Namespace) -> None:
         {
             "layer": layer_name,
             "defense": "Base",
-            "step": float(args.base_step),
+            "step": 0.0,
             "checkpoint": str(Path(args.base)),
             "label": Path(args.base).name,
             "alpha_safe": 0.0,
@@ -455,7 +511,7 @@ def run(args: argparse.Namespace) -> None:
             base_vectors,
             layer_param_names,
             layer_map,
-            torch_dtype,
+            torch_dtype=None,
         )
     )
     df = pd.DataFrame.from_records(records)
