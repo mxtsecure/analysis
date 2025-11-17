@@ -159,7 +159,7 @@ def _plot_histograms(
     ncols = min(5, n_panels)
     nrows = math.ceil(n_panels / ncols)
     plt.style.use("seaborn-v0_8")
-    fig, axes = plt.subplots(nrows, ncols, figsize=(2.5 * ncols, 2.0 * nrows), sharey=True)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(1.6 * ncols, 1.4 * nrows), sharey=True)
     if nrows == 1 and ncols == 1:
         axes = np.array([[axes]])
     elif nrows == 1:
@@ -199,8 +199,14 @@ def _plot_histograms(
         ax.set_xlim(-1.05, 1.05)
         ax.set_ylim(bottom=0)
         ax.grid(alpha=0.3, linestyle="--", linewidth=0.5)
-        if row == nrows - 1:
-            ax.set_xlabel("Cosine similarity")
+        is_bottom_row = row == nrows - 1
+        ax.tick_params(labelbottom=is_bottom_row, bottom=is_bottom_row)
+        if is_bottom_row:
+            ax.set_xticks([-1.0, 0.0, 1.0])
+            ax.set_xticklabels(["-1.0", "0.0", "1.0"])
+            ax.set_xlabel("Cos Sim")
+        else:
+            ax.set_xticks([])
         if col == 0:
             ax.set_ylabel("Proportion")
         if panel_idx == 0:
@@ -209,6 +215,7 @@ def _plot_histograms(
         row = extra // ncols
         col = extra % ncols
         axes[row][col].axis("off")
+    fig.supxlabel("Mean Act.")
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=300)
