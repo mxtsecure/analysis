@@ -8,25 +8,27 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM
-
-from ..analysis.concept_vectors import ConceptVector, cosine_similarity as concept_cos
-from ..analysis.parameter_updates import cosine_similarity as param_cos, parameter_update_vector
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from analysis.concept_vectors import ConceptVector, cosine_similarity as concept_cos
+from analysis.parameter_updates import cosine_similarity as param_cos, parameter_update_vector
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--d1", required=True)
-    parser.add_argument("--d1d2", required=True)
-    parser.add_argument("--concept-safety", type=Path, required=True)
-    parser.add_argument("--concept-privacy", type=Path, required=True)
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu")
+    parser.add_argument("--d1", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO")
+    parser.add_argument("--d1d2", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-DPO-NPO")
+    parser.add_argument("--concept-safety", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_safety.pt")
+    parser.add_argument("--concept-privacy", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis_results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/fast/model_layers_7/v_privacy.pt")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--plot-path", type=Path)
+    parser.add_argument("--plot-path", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis_results/03-conflict/Llama-3.2-1B-Instruct-tofu/result.png")
     return parser.parse_args()
 
 
 def load_concept(path: Path) -> ConceptVector:
-    return torch.load(path, map_location="cpu")
+    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def stack_concept_directions(*concepts: ConceptVector) -> torch.Tensor:
