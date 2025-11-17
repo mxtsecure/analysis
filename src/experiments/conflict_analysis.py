@@ -6,6 +6,7 @@ import math
 from contextlib import nullcontext
 from pathlib import Path
 
+import numpy as np
 import torch
 from transformers import AutoModelForCausalLM
 import sys
@@ -70,22 +71,93 @@ def project_to_2d(directions: torch.Tensor) -> torch.Tensor:
     return coords
 
 
+def _coerce_sample_tensor(samples, name: str | None = None) -> torch.Tensor | None:
+    """Convert user supplied samples to a 2D float tensor if provided."""
+
+    if samples is None:
+        return None
+    tensor = torch.as_tensor(samples, dtype=torch.float32)
+    if tensor.requires_grad:
+        tensor = tensor.detach()
+    tensor = tensor.cpu()
+    if tensor.ndim != 2:
+        raise ValueError(
+            f"{name or 'Samples'} must be a 2D tensor/array, got shape {tuple(tensor.shape)}"
+        )
+    return tensor
+
+
 def plot_concept_conflict(
     safety: ConceptVector,
     privacy: ConceptVector,
     similarity: float,
     save_path: Path,
+    baseline_samples: torch.Tensor | np.ndarray | None = None,
+    safety_samples: torch.Tensor | np.ndarray | None = None,
+    privacy_samples: torch.Tensor | np.ndarray | None = None,
 ) -> None:
-    """Plot a 2D visualization of the concept conflict and save it."""
+    """Plot a 2D visualization of the concept conflict and save it.
+
+    Args:
+        safety: Learned safety concept vector.
+        privacy: Learned privacy concept vector.
+        similarity: Cosine similarity between the two concepts.
+        save_path: Destination for the saved figure.
+        baseline_samples: Optional baseline sample embeddings of shape ``[N, D]``.
+        safety_samples: Optional safety-defense embeddings aligned with ``baseline_samples``.
+        privacy_samples: Optional privacy-defense embeddings aligned with ``baseline_samples``.
+    """
 
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
     from matplotlib.patches import FancyArrowPatch, Wedge
 
+    baseline_tensor = _coerce_sample_tensor(baseline_samples, "Baseline samples")
+    safety_tensor = _coerce_sample_tensor(safety_samples, "Safety samples")
+    privacy_tensor = _coerce_sample_tensor(privacy_samples, "Privacy samples")
+
+    num_samples = None
+    for name, tensor in (
+        ("baseline", baseline_tensor),
+        ("safety", safety_tensor),
+        ("privacy", privacy_tensor),
+    ):
+        if tensor is None:
+            continue
+        if num_samples is None:
+            num_samples = tensor.shape[0]
+        elif tensor.shape[0] != num_samples:
+            raise ValueError("All sample tensors must share the same number of rows (N).")
+
+    sample_tensors = [t for t in (baseline_tensor, safety_tensor, privacy_tensor) if t is not None]
+    if sample_tensors:
+        basis_inputs = torch.cat(sample_tensors, dim=0)
+    else:
+        basis_inputs = stack_concept_directions(safety, privacy)
+    basis = compute_projection_basis(basis_inputs)
+
+    def _project(tensor: torch.Tensor | None) -> torch.Tensor | None:
+        return None if tensor is None else tensor @ basis.T
+
     directions = stack_concept_directions(safety, privacy)
-    coords = project_to_2d(directions)
-    coords_list = coords.tolist()
-    labels = ["Safety", "Privacy"]
+    concept_coords = directions @ basis.T
+    coords_list = concept_coords.tolist()
+    labels = ["Safety concept", "Privacy concept"]
     colors = ["#2878b5", "#d14a61"]
+
+    baseline_proj = _project(baseline_tensor)
+    safety_proj = _project(safety_tensor)
+    privacy_proj = _project(privacy_tensor)
+
+    tensors_for_limit = [concept_coords]
+    tensors_for_limit.extend(
+        tensor for tensor in (baseline_proj, safety_proj, privacy_proj) if tensor is not None
+    )
+    limit = 1.0
+    if tensors_for_limit:
+        limit = max(float(tensor.abs().max().item()) for tensor in tensors_for_limit if tensor.numel())
+        limit = max(limit, 1e-3)
+    limit *= 1.25
 
     try:
         style_ctx = plt.style.context("seaborn-v0_8-whitegrid")
@@ -94,8 +166,6 @@ def plot_concept_conflict(
 
     with style_ctx:
         fig, ax = plt.subplots(figsize=(7, 7))
-        limit = max(float(coords.abs().max().item()), 1e-3)
-        limit *= 1.25
 
         # soft radial backdrop to emphasize the angle between concepts
         angle_a = math.degrees(math.atan2(coords_list[0][1], coords_list[0][0]))
@@ -135,6 +205,123 @@ def plot_concept_conflict(
                 fontweight="bold",
             )
 
+        legend_handles = []
+        legend_labels = []
+
+        if baseline_proj is not None:
+            baseline_cloud = ax.scatter(
+                baseline_proj[:, 0],
+                baseline_proj[:, 1],
+                color="#888888",
+                s=18,
+                alpha=0.35,
+                label="Baseline samples",
+            )
+            legend_handles.append(baseline_cloud)
+            legend_labels.append("Baseline cloud")
+
+        per_arrow_handles = []
+        per_arrow_labels = []
+
+        def _draw_sample_arrows(
+            start: torch.Tensor | None,
+            end: torch.Tensor | None,
+            color: str,
+            linestyle: str = "-",
+        ) -> bool:
+            if start is None or end is None:
+                return False
+            for idx in range(start.shape[0]):
+                arrow = FancyArrowPatch(
+                    (float(start[idx, 0]), float(start[idx, 1])),
+                    (float(end[idx, 0]), float(end[idx, 1])),
+                    arrowstyle="->",
+                    mutation_scale=8,
+                    linewidth=1.0,
+                    linestyle=linestyle,
+                    color=color,
+                    alpha=0.7,
+                )
+                ax.add_patch(arrow)
+            return True
+
+        if _draw_sample_arrows(baseline_proj, safety_proj, "#3c8dbc"):
+            per_arrow_handles.append(
+                Line2D([0, 1], [0, 0], color="#3c8dbc", linestyle="-", linewidth=1.5)
+            )
+            per_arrow_labels.append("Safety sample shift")
+        if _draw_sample_arrows(
+            baseline_proj,
+            privacy_proj,
+            "#c9714d",
+            linestyle="--",
+        ):
+            per_arrow_handles.append(
+                Line2D([0, 1], [0, 0], color="#c9714d", linestyle="--", linewidth=1.5)
+            )
+            per_arrow_labels.append("Privacy sample shift")
+
+        def _plot_mean_arrow(displacement: torch.Tensor | None, color: str, label: str):
+            if displacement is None:
+                return None
+            mean_vec = displacement.mean(dim=0)
+            arrow = FancyArrowPatch(
+                (0.0, 0.0),
+                (float(mean_vec[0]), float(mean_vec[1])),
+                arrowstyle="-|>",
+                mutation_scale=25,
+                linewidth=4.0,
+                color=color,
+                alpha=0.9,
+            )
+            ax.add_patch(arrow)
+            legend_handles.append(
+                Line2D([0, 1], [0, 0], color=color, linewidth=4.0, marker=">", markersize=8)
+            )
+            legend_labels.append(label)
+            return mean_vec
+
+        safety_disp = (
+            safety_proj - baseline_proj if (safety_proj is not None and baseline_proj is not None) else None
+        )
+        privacy_disp = (
+            privacy_proj - baseline_proj if (privacy_proj is not None and baseline_proj is not None) else None
+        )
+
+        mean_safety = _plot_mean_arrow(safety_disp, "#1c5d84", "Mean safety displacement")
+        mean_privacy = _plot_mean_arrow(privacy_disp, "#a24732", "Mean privacy displacement")
+
+        if mean_safety is not None and mean_privacy is not None:
+            dot = float(torch.dot(mean_safety, mean_privacy))
+            norm_prod = float(mean_safety.norm() * mean_privacy.norm())
+            if norm_prod > 0:
+                cos_val = max(-1.0, min(1.0, dot / norm_prod))
+                mean_angle = math.degrees(math.acos(cos_val))
+                ax.text(
+                    0.05 * limit,
+                    0.05 * limit,
+                    f"Δθ ≈ {mean_angle:.1f}°",
+                    fontsize=11,
+                    color="#333333",
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8),
+                )
+                start_angle = math.degrees(math.atan2(mean_safety[1], mean_safety[0]))
+                end_angle = math.degrees(math.atan2(mean_privacy[1], mean_privacy[0]))
+                wedge = Wedge(
+                    (0.0, 0.0),
+                    0.35 * limit,
+                    min(start_angle, end_angle),
+                    max(start_angle, end_angle),
+                    width=0.05 * limit,
+                    facecolor="#f6d9c6",
+                    edgecolor="none",
+                    alpha=0.6,
+                )
+                ax.add_patch(wedge)
+
+        legend_handles.extend(per_arrow_handles)
+        legend_labels.extend(per_arrow_labels)
+
         cos_val = max(-1.0, min(1.0, float(similarity)))
         angle_deg = math.degrees(math.acos(cos_val))
         annotation = f"cosθ = {cos_val:.3f}\nθ = {angle_deg:.1f}°"
@@ -158,7 +345,11 @@ def plot_concept_conflict(
         ax.axhline(0, color="#888888", linewidth=1, alpha=0.6)
         ax.axvline(0, color="#888888", linewidth=1, alpha=0.6)
         ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.35)
-        ax.legend(labels, loc="upper right", frameon=False)
+        concept_handle = Line2D([0, 1], [0, 0], color="#2878b5", linewidth=3.0)
+        privacy_handle = Line2D([0, 1], [0, 0], color="#d14a61", linewidth=3.0)
+        legend_handles.extend([concept_handle, privacy_handle])
+        legend_labels.extend(labels)
+        ax.legend(legend_handles, legend_labels, loc="upper right", frameon=False)
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
