@@ -20,6 +20,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analysis.key_layers import collect_last_token_hidden_states
 from data.datasets import build_dual_dataset, RequestDataset
 
+DEFAULT_BINS = np.linspace(-1.0, 1.0, 40)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -148,20 +150,22 @@ def _plot_histograms(
     activation_cos: Dict[int, np.ndarray],
     weight_cos: Dict[int, np.ndarray],
     output: Path,
+    *,
+    bins: np.ndarray = DEFAULT_BINS,
 ) -> Path:
     if not layers:
         raise ValueError("No layers available for plotting")
     n_panels = len(layers)
     ncols = min(5, n_panels)
     nrows = math.ceil(n_panels / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 2.6 * nrows), sharey=True)
+    plt.style.use("seaborn-v0_8")
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.5 * ncols, 2.0 * nrows), sharey=True)
     if nrows == 1 and ncols == 1:
         axes = np.array([[axes]])
     elif nrows == 1:
         axes = np.array([axes])
     elif ncols == 1:
         axes = np.array([[ax] for ax in axes])
-    bins = np.linspace(-1.0, 1.0, 40)
     for panel_idx, layer in enumerate(layers):
         row = panel_idx // ncols
         col = panel_idx % ncols
@@ -171,11 +175,30 @@ def _plot_histograms(
         if act_values is None or weight_values is None:
             ax.axis("off")
             continue
-        ax.hist(weight_values, bins=bins, density=True, alpha=0.65, color="#4C72B0", label="Weights")
-        ax.hist(act_values, bins=bins, density=True, alpha=0.55, color="#DD8452", label="Activations")
+        ax.hist(
+            weight_values,
+            bins=bins,
+            density=True,
+            alpha=0.65,
+            color="#4C72B0",
+            edgecolor="white",
+            linewidth=0.5,
+            label="Weights",
+        )
+        ax.hist(
+            act_values,
+            bins=bins,
+            density=True,
+            alpha=0.55,
+            color="#DD8452",
+            edgecolor="white",
+            linewidth=0.5,
+            label="Activations",
+        )
         ax.set_title(f"Layer {layer}")
         ax.set_xlim(-1.05, 1.05)
         ax.set_ylim(bottom=0)
+        ax.grid(alpha=0.3, linestyle="--", linewidth=0.5)
         if row == nrows - 1:
             ax.set_xlabel("Cosine similarity")
         if col == 0:
@@ -191,6 +214,29 @@ def _plot_histograms(
     fig.savefig(output, dpi=300)
     plt.close(fig)
     return output
+
+
+def _pearson_by_layer(
+    layers: Sequence[int],
+    activation_cos: Dict[int, np.ndarray],
+    weight_cos: Dict[int, np.ndarray],
+    *,
+    bins: np.ndarray = DEFAULT_BINS,
+) -> Dict[int, float]:
+    pearson_scores: Dict[int, float] = {}
+    for layer in layers:
+        act_values = activation_cos.get(layer)
+        weight_values = weight_cos.get(layer)
+        if act_values is None or weight_values is None:
+            continue
+        act_hist, _ = np.histogram(act_values, bins=bins, density=True)
+        weight_hist, _ = np.histogram(weight_values, bins=bins, density=True)
+        if np.allclose(act_hist.std(), 0) or np.allclose(weight_hist.std(), 0):
+            pearson = float("nan")
+        else:
+            pearson = np.corrcoef(act_hist, weight_hist)[0, 1]
+        pearson_scores[layer] = pearson
+    return pearson_scores
 
 
 def main() -> None:  # pragma: no cover - CLI entrypoint
@@ -227,12 +273,19 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
     if not available_layers:
         raise ValueError("Selected layers do not have both activation and weight statistics")
 
-    output_path = _plot_histograms(available_layers, activation_cos, weight_cos, args.output)
-    act_means = [activation_cos[layer].mean() for layer in available_layers]
-    weight_means = [weight_cos[layer].mean() for layer in available_layers]
-    if len(act_means) > 1:
-        pearson = np.corrcoef(act_means, weight_means)[0, 1]
-        print(f"Pearson corr(mean cos): {pearson:.4f}")
+    output_path = _plot_histograms(available_layers, activation_cos, weight_cos, args.output, bins=DEFAULT_BINS)
+    pearson_scores = _pearson_by_layer(available_layers, activation_cos, weight_cos, bins=DEFAULT_BINS)
+    if pearson_scores:
+        print("Pearson corr (per-layer histogram density):")
+        for layer in available_layers:
+            if layer not in pearson_scores:
+                continue
+            pearson = pearson_scores[layer]
+            if np.isnan(pearson):
+                display = "nan"
+            else:
+                display = f"{pearson:.4f}"
+            print(f"  Layer {layer}: {display}")
     print(f"Saved histogram grid to {output_path}")
 
 
