@@ -145,6 +145,20 @@ def plot_concept_conflict(
     else:
         plot_mode = "concepts"
 
+    baseline_proj = _project(baseline_tensor)
+    safety_proj = _project(safety_tensor)
+    privacy_proj = _project(privacy_tensor)
+
+    tensors_for_limit = [concept_coords]
+    tensors_for_limit.extend(
+        tensor for tensor in (baseline_proj, safety_proj, privacy_proj) if tensor is not None
+    )
+    limit = 1.0
+    if tensors_for_limit:
+        limit = max(float(tensor.abs().max().item()) for tensor in tensors_for_limit if tensor.numel())
+        limit = max(limit, 1e-3)
+    limit *= 1.25
+
     try:
         style_ctx = plt.style.context("seaborn-v0_8-whitegrid")
     except OSError:
