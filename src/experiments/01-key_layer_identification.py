@@ -24,11 +24,11 @@ from data.datasets import load_dataset
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to M_tofu (base model)") 
-    parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the defense model") 
-    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/retain.jsonl", type=Path, help="Normal query dataset path") 
-    parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", type=Path, help="Risk query dataset path") 
-    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/result.json", type=Path, help="Output JSON file for metrics")
+    parser.add_argument("--base-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/gemma-2-2b-it-tofu", help="Path to M_tofu (base model)") 
+    parser.add_argument("--defense-model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/gemma-2-2b-it-tofu/gemma-2-2b-it-tofu-NPO", help="Path to the defense model") 
+    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", type=Path, help="Normal query dataset path") 
+    parser.add_argument("--risk", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", type=Path, help="Risk query dataset path") 
+    parser.add_argument("--output", default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/gemma-2-2b-it-tofu-NPO/result.json", type=Path, help="Output JSON file for metrics")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-pairs", type=int, default=500)
     parser.add_argument("--smoothing", type=int, default=5)
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-path",
         type=Path,
-        default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/Llama-3.2-1B-Instruct-tofu-NPO/result.png",
+        default="/data/xiangtao/projects/crossdefense/code/analysis_results/0-key_layers/gemma-2-2b-it-tofu-NPO/result.png",
         help="Explicit path for saving the plot (implies --plot).",
     )
     return parser.parse_args()
