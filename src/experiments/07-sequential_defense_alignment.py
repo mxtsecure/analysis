@@ -210,66 +210,6 @@ def _save_heatmap(matrix: np.ndarray, labels: Sequence[str], path: Path) -> None
     plt.close(fig)
 
 
-def _save_shift_change_plot(
-    activation_deltas: Mapping[str, Mapping[str, Mapping[int, float]]],
-    path: Path,
-) -> None:
-    if not activation_deltas:
-        return
-
-    transitions = [
-        ("base_to_defense1", "Base→Defense1"),
-        ("defense1_to_defense2", "Defense1→Defense2"),
-    ]
-    splits = sorted(activation_deltas.keys())
-    fig, axes = plt.subplots(
-        len(splits),
-        1,
-        figsize=(3.8, 1.8 * len(splits) + 0.6),
-        sharex=True,
-        squeeze=False,
-    )
-
-    for ax, split in zip(axes.flat, splits):
-        previous_level = 0.0
-        x_positions = [0, 1, 2]
-        y_points = [previous_level]
-        for idx, (key, label) in enumerate(transitions):
-            per_layer = activation_deltas[split].get(key, {})
-            magnitude = float(np.mean(list(per_layer.values()))) if per_layer else 0.0
-            next_level = previous_level + magnitude
-            ax.annotate(
-                "",
-                xy=(x_positions[idx + 1], next_level),
-                xytext=(x_positions[idx], previous_level),
-                arrowprops=dict(arrowstyle="->", color="#1f77b4", lw=1.5),
-            )
-            mid_x = (x_positions[idx] + x_positions[idx + 1]) / 2
-            mid_y = (previous_level + next_level) / 2
-            ax.text(
-                mid_x,
-                mid_y,
-                f"变动 {magnitude:.3f}",
-                fontsize=8,
-                ha="center",
-                va="bottom",
-                color="#333333",
-            )
-            y_points.append(next_level)
-            previous_level = next_level
-        ax.plot(x_positions, y_points, color="#1f77b4", linewidth=1.0)
-        ax.set_title(f"{split} activations", fontsize=9)
-        ax.set_ylabel("Δ norm", fontsize=8)
-        ax.grid(True, axis="y", linestyle="--", alpha=0.3)
-
-    axes[-1, 0].set_xticks([0, 1, 2])
-    axes[-1, 0].set_xticklabels(["Base", "Defense1", "Defense2"], fontsize=8)
-    fig.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=200)
-    plt.close(fig)
-
-
 def _pca_project(matrix: torch.Tensor, n_components: int = 2) -> np.ndarray:
     if matrix.ndim != 2:
         matrix = matrix.view(matrix.shape[0], -1)
@@ -288,31 +228,58 @@ def _pca_project(matrix: torch.Tensor, n_components: int = 2) -> np.ndarray:
 
 
 def _save_activation_projection_plot(
-    layer_means: Mapping[str, Mapping[str, Mapping[int, torch.Tensor]]],
+    activation_states: Mapping[str, Mapping[str, Sequence[torch.Tensor]]],
     layers: Sequence[int],
     path: Path,
+    *,
+    max_points_per_group: int = 250,
+    seed: int = 0,
 ) -> None:
     model_order = ["base", "defense1", "defense2"]
     split_order = ["malicious", "privacy"]
     split_readable = {"malicious": "Safety", "privacy": "Privacy"}
-    marker_map = {"base": "o", "defense1": "s", "defense2": "D"}
     color_map = {"malicious": "#d62728", "privacy": "#1f77b4"}
+    phase_lookup = {
+        ("base", "malicious"): "阶段一",
+        ("defense1", "malicious"): "阶段一",
+        ("defense1", "privacy"): "阶段二",
+        ("defense2", "privacy"): "阶段二",
+    }
+    marker_map = {"阶段一": "o", "阶段二": "s", "其他": "^"}
+    phase_descriptions = {
+        "阶段一": "阶段一：初始防御部署",
+        "阶段二": "阶段二：二次防御部署",
+        "其他": "其他激活",
+    }
+
+    generator = torch.Generator().manual_seed(seed)
 
     valid_layers: List[int] = []
-    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]] = {}
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str, str]]]] = {}
     for layer in layers:
         vectors: List[torch.Tensor] = []
-        meta: List[Tuple[str, str]] = []
+        meta: List[Tuple[str, str, str]] = []
         for model in model_order:
             for split in split_order:
-                vec = layer_means.get(model, {}).get(split, {}).get(layer)
-                if vec is None:
+                split_states = activation_states.get(model, {}).get(split)
+                if split_states is None or layer >= len(split_states):
                     continue
-                vectors.append(vec.detach().float())
-                meta.append((model, split))
-        if len(vectors) < 2:
+                tensor = split_states[layer].float()
+                if tensor.ndim != 2:
+                    tensor = tensor.view(tensor.shape[0], -1)
+                if tensor.size(0) == 0:
+                    continue
+                if tensor.size(0) > max_points_per_group:
+                    indices = torch.randperm(tensor.size(0), generator=generator)[:max_points_per_group]
+                    selected = tensor[indices]
+                else:
+                    selected = tensor
+                vectors.append(selected)
+                phase = phase_lookup.get((model, split), "其他")
+                meta.extend([(model, split, phase) for _ in range(selected.size(0))])
+        if not vectors:
             continue
-        stacked = torch.stack(vectors, dim=0)
+        stacked = torch.cat(vectors, dim=0)
         projected = _pca_project(stacked, 2)
         layer_points[layer] = (projected, meta)
         valid_layers.append(layer)
@@ -331,64 +298,23 @@ def _save_activation_projection_plot(
     for ax, layer in zip(axes, valid_layers):
         projected, meta = layer_points[layer]
         legend_shown: Set[str] = set()
-        point_lookup: Dict[Tuple[str, str], Tuple[float, float]] = {}
-        for (model, split), coords in zip(meta, projected):
+        for (model, split, phase), coords in zip(meta, projected):
             x, y = coords.tolist()
-            point_lookup[(model, split)] = (x, y)
-            key = f"{model}-{split}"
+            key = f"{phase}-{split}"
             label = None
             if key not in legend_shown:
-                label = f"{model.title()} - {split_readable.get(split, split)}"
                 legend_shown.add(key)
+                label = f"{phase_descriptions.get(phase, phase)} · {split_readable.get(split, split)}"
             ax.scatter(
                 x,
                 y,
                 c=color_map.get(split, "#777777"),
-                marker=marker_map.get(model, "o"),
+                marker=marker_map.get(phase, marker_map["其他"]),
                 edgecolor="white",
-                linewidths=0.5,
-                s=35,
+                linewidths=0.4,
+                s=20,
+                alpha=0.6,
                 label=label,
-                alpha=0.85,
-            )
-
-        # Draw safety (base->defense1 on malicious) and privacy (defense1->defense2 on privacy)
-        safety_start = point_lookup.get(("base", "malicious"))
-        safety_end = point_lookup.get(("defense1", "malicious"))
-        if safety_start and safety_end:
-            ax.annotate(
-                "",
-                xy=safety_end,
-                xytext=safety_start,
-                arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=2),
-            )
-            ax.text(
-                (safety_start[0] + safety_end[0]) / 2,
-                (safety_start[1] + safety_end[1]) / 2,
-                "Safety shift\n变动",
-                color="#ff7f0e",
-                fontsize=9,
-                ha="left",
-                va="bottom",
-            )
-
-        privacy_start = point_lookup.get(("defense1", "privacy"))
-        privacy_end = point_lookup.get(("defense2", "privacy"))
-        if privacy_start and privacy_end:
-            ax.annotate(
-                "",
-                xy=privacy_end,
-                xytext=privacy_start,
-                arrowprops=dict(arrowstyle="->", color="#9467bd", lw=2),
-            )
-            ax.text(
-                (privacy_start[0] + privacy_end[0]) / 2,
-                (privacy_start[1] + privacy_end[1]) / 2,
-                "Privacy shift\n变动",
-                color="#9467bd",
-                fontsize=9,
-                ha="right",
-                va="top",
             )
 
         ax.set_title(f"Layer model.layers.{layer} – PCA projection", fontsize=11)
@@ -397,7 +323,6 @@ def _save_activation_projection_plot(
         ax.grid(True, linestyle="--", alpha=0.25)
         ax.legend(fontsize=8, loc="best")
 
-    # Hide any unused axes
     for extra_ax in axes[len(valid_layers):]:
         extra_ax.axis("off")
 
@@ -542,11 +467,13 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
     cosine_matrix = np.array([[shift_cosines[row][col] for col in labels] for row in labels])
     _save_heatmap(cosine_matrix, labels, heatmap_path)
 
-    shift_change_path = results_dir / "activation_shift_changes.png"
-    _save_shift_change_plot(activation_deltas, shift_change_path)
-
     projection_path = results_dir / "activation_shift_projection.png"
-    _save_activation_projection_plot(layer_means, selected_layers, projection_path)
+    _save_activation_projection_plot(
+        activation_states,
+        selected_layers,
+        projection_path,
+        seed=args.seed,
+    )
 
     summary_lines = [
         "Sequential defense alignment:",
