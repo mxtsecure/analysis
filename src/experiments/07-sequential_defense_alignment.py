@@ -238,18 +238,10 @@ def _save_activation_projection_plot(
     model_order = ["base", "defense1", "defense2"]
     split_order = ["malicious", "privacy"]
     split_readable = {"malicious": "Safety", "privacy": "Privacy"}
-    color_map = {"malicious": "#d62728", "privacy": "#1f77b4"}
-    phase_lookup = {
-        ("base", "malicious"): "阶段一",
-        ("defense1", "malicious"): "阶段一",
-        ("defense1", "privacy"): "阶段二",
-        ("defense2", "privacy"): "阶段二",
-    }
-    marker_map = {"阶段一": "o", "阶段二": "s", "其他": "^"}
-    phase_descriptions = {
-        "阶段一": "阶段一：初始防御部署",
-        "阶段二": "阶段二：二次防御部署",
-        "其他": "其他激活",
+    model_styles = {
+        "base": {"color": "#9467bd", "marker": "o"},
+        "defense1": {"color": "#d62728", "marker": "s"},
+        "defense2": {"color": "#2ca02c", "marker": "^"},
     }
 
     generator = torch.Generator().manual_seed(seed)
@@ -275,8 +267,7 @@ def _save_activation_projection_plot(
                 else:
                     selected = tensor
                 vectors.append(selected)
-                phase = phase_lookup.get((model, split), "其他")
-                meta.extend([(model, split, phase) for _ in range(selected.size(0))])
+                meta.extend([(model, split) for _ in range(selected.size(0))])
         if not vectors:
             continue
         stacked = torch.cat(vectors, dim=0)
@@ -298,23 +289,71 @@ def _save_activation_projection_plot(
     for ax, layer in zip(axes, valid_layers):
         projected, meta = layer_points[layer]
         legend_shown: Set[str] = set()
-        for (model, split, phase), coords in zip(meta, projected):
-            x, y = coords.tolist()
-            key = f"{phase}-{split}"
+        pair_points: Dict[Tuple[str, str], List[np.ndarray]] = {}
+        for (model, split), coords in zip(meta, projected):
+            pair_points.setdefault((model, split), []).append(coords)
+        centroid_map: Dict[Tuple[str, str], np.ndarray] = {}
+        for (model, split), coords in pair_points.items():
+            coords_arr = np.vstack(coords)
+            centroid = coords_arr.mean(axis=0)
+            centroid_map[(model, split)] = centroid
+            key = f"{model}-{split}"
             label = None
             if key not in legend_shown:
                 legend_shown.add(key)
-                label = f"{phase_descriptions.get(phase, phase)} · {split_readable.get(split, split)}"
+                model_label = model.capitalize()
+                split_label = split_readable.get(split, split)
+                label = f"{model_label} · {split_label}"
+            style = model_styles.get(model, {})
             ax.scatter(
-                x,
-                y,
-                c=color_map.get(split, "#777777"),
-                marker=marker_map.get(phase, marker_map["其他"]),
+                coords_arr[:, 0],
+                coords_arr[:, 1],
+                c=style.get("color", "#777777"),
+                marker=style.get("marker", "o"),
                 edgecolor="white",
                 linewidths=0.4,
                 s=20,
-                alpha=0.6,
+                alpha=0.55,
                 label=label,
+            )
+            ax.scatter(
+                centroid[0],
+                centroid[1],
+                c=style.get("color", "#777777"),
+                marker="X",
+                s=40,
+                edgecolor="black",
+                linewidths=0.5,
+                zorder=5,
+            )
+
+        transitions = [
+            (("base", "malicious"), ("defense1", "malicious"), "Base → Defense1 (Safety)"),
+            (("defense1", "privacy"), ("defense2", "privacy"), "Defense1 → Defense2 (Privacy)"),
+        ]
+        for start, end, title in transitions:
+            start_centroid = centroid_map.get(start)
+            end_centroid = centroid_map.get(end)
+            if start_centroid is None or end_centroid is None:
+                continue
+            ax.annotate(
+                "",
+                xy=end_centroid,
+                xytext=start_centroid,
+                arrowprops=dict(
+                    arrowstyle="->",
+                    color=model_styles.get(start[0], {}).get("color", "#555555"),
+                    linewidth=1.5,
+                ),
+            )
+            ax.text(
+                *(start_centroid * 0.3 + end_centroid * 0.7),
+                title,
+                fontsize=8,
+                color="#333333",
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6, linewidth=0),
             )
 
         ax.set_title(f"Layer model.layers.{layer} – PCA projection", fontsize=11)
