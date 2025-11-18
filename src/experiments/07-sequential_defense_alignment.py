@@ -4,8 +4,9 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -120,6 +121,37 @@ def _difference_vector(
     return torch.cat(diffs)
 
 
+def _compute_activation_deltas(
+    layer_means: Mapping[str, Mapping[str, Mapping[int, torch.Tensor]]],
+    layers: Sequence[int],
+) -> Dict[str, Dict[str, Dict[int, float]]]:
+    """Compute per-layer activation deltas for each dataset split."""
+
+    transitions = [
+        ("base", "defense1", "base_to_defense1"),
+        ("defense1", "defense2", "defense1_to_defense2"),
+    ]
+    activation_deltas: Dict[str, Dict[str, Dict[int, float]]] = {}
+    for split in sorted({split for model in layer_means.values() for split in model.keys()}):
+        activation_deltas[split] = {}
+        for start_model, end_model, name in transitions:
+            if split not in layer_means.get(start_model, {}):
+                continue
+            if split not in layer_means.get(end_model, {}):
+                continue
+            per_layer: Dict[int, float] = {}
+            for layer in layers:
+                baseline = layer_means[start_model][split].get(layer)
+                updated = layer_means[end_model][split].get(layer)
+                if baseline is None or updated is None:
+                    continue
+                delta = (updated - baseline).reshape(-1)
+                per_layer[layer] = torch.norm(delta).item()
+            if per_layer:
+                activation_deltas[split][name] = per_layer
+    return activation_deltas
+
+
 def _pairwise_cosine_table(vectors: Mapping[str, torch.Tensor]) -> Dict[str, Dict[str, float]]:
     table: Dict[str, Dict[str, float]] = {}
     for left, right in itertools.product(vectors.keys(), repeat=2):
@@ -172,6 +204,203 @@ def _save_heatmap(matrix: np.ndarray, labels: Sequence[str], path: Path) -> None
         for j in range(len(labels)):
             ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center", color="black", fontsize=7)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def _save_shift_change_plot(
+    activation_deltas: Mapping[str, Mapping[str, Mapping[int, float]]],
+    path: Path,
+) -> None:
+    if not activation_deltas:
+        return
+
+    transitions = [
+        ("base_to_defense1", "Base→Defense1"),
+        ("defense1_to_defense2", "Defense1→Defense2"),
+    ]
+    splits = sorted(activation_deltas.keys())
+    fig, axes = plt.subplots(
+        len(splits),
+        1,
+        figsize=(3.8, 1.8 * len(splits) + 0.6),
+        sharex=True,
+        squeeze=False,
+    )
+
+    for ax, split in zip(axes.flat, splits):
+        previous_level = 0.0
+        x_positions = [0, 1, 2]
+        y_points = [previous_level]
+        for idx, (key, label) in enumerate(transitions):
+            per_layer = activation_deltas[split].get(key, {})
+            magnitude = float(np.mean(list(per_layer.values()))) if per_layer else 0.0
+            next_level = previous_level + magnitude
+            ax.annotate(
+                "",
+                xy=(x_positions[idx + 1], next_level),
+                xytext=(x_positions[idx], previous_level),
+                arrowprops=dict(arrowstyle="->", color="#1f77b4", lw=1.5),
+            )
+            mid_x = (x_positions[idx] + x_positions[idx + 1]) / 2
+            mid_y = (previous_level + next_level) / 2
+            ax.text(
+                mid_x,
+                mid_y,
+                f"变动 {magnitude:.3f}",
+                fontsize=8,
+                ha="center",
+                va="bottom",
+                color="#333333",
+            )
+            y_points.append(next_level)
+            previous_level = next_level
+        ax.plot(x_positions, y_points, color="#1f77b4", linewidth=1.0)
+        ax.set_title(f"{split} activations", fontsize=9)
+        ax.set_ylabel("Δ norm", fontsize=8)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.3)
+
+    axes[-1, 0].set_xticks([0, 1, 2])
+    axes[-1, 0].set_xticklabels(["Base", "Defense1", "Defense2"], fontsize=8)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def _pca_project(matrix: torch.Tensor, n_components: int = 2) -> np.ndarray:
+    if matrix.ndim != 2:
+        matrix = matrix.view(matrix.shape[0], -1)
+    centered = matrix - matrix.mean(dim=0, keepdim=True)
+    # Guard against zero variance by returning zeros
+    if torch.allclose(centered, torch.zeros_like(centered)):
+        return np.zeros((matrix.shape[0], n_components), dtype=np.float32)
+    np_matrix = centered.detach().cpu().numpy()
+    u, s, vh = np.linalg.svd(np_matrix, full_matrices=False)
+    components = vh[: min(n_components, vh.shape[0])]
+    projected = np_matrix @ components.T
+    if components.shape[0] < n_components:
+        pad = np.zeros((projected.shape[0], n_components - components.shape[0]), dtype=projected.dtype)
+        projected = np.hstack([projected, pad])
+    return projected
+
+
+def _save_activation_projection_plot(
+    layer_means: Mapping[str, Mapping[str, Mapping[int, torch.Tensor]]],
+    layers: Sequence[int],
+    path: Path,
+) -> None:
+    model_order = ["base", "defense1", "defense2"]
+    split_order = ["malicious", "privacy"]
+    split_readable = {"malicious": "Safety", "privacy": "Privacy"}
+    marker_map = {"base": "o", "defense1": "s", "defense2": "D"}
+    color_map = {"malicious": "#d62728", "privacy": "#1f77b4"}
+
+    valid_layers: List[int] = []
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]] = {}
+    for layer in layers:
+        vectors: List[torch.Tensor] = []
+        meta: List[Tuple[str, str]] = []
+        for model in model_order:
+            for split in split_order:
+                vec = layer_means.get(model, {}).get(split, {}).get(layer)
+                if vec is None:
+                    continue
+                vectors.append(vec.detach().float())
+                meta.append((model, split))
+        if len(vectors) < 2:
+            continue
+        stacked = torch.stack(vectors, dim=0)
+        projected = _pca_project(stacked, 2)
+        layer_points[layer] = (projected, meta)
+        valid_layers.append(layer)
+
+    if not valid_layers:
+        return
+
+    n_layers = len(valid_layers)
+    ncols = 2 if n_layers > 1 else 1
+    nrows = math.ceil(n_layers / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.6 * nrows))
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([[axes]])
+    axes = axes.flatten()
+
+    for ax, layer in zip(axes, valid_layers):
+        projected, meta = layer_points[layer]
+        legend_shown: Set[str] = set()
+        point_lookup: Dict[Tuple[str, str], Tuple[float, float]] = {}
+        for (model, split), coords in zip(meta, projected):
+            x, y = coords.tolist()
+            point_lookup[(model, split)] = (x, y)
+            key = f"{model}-{split}"
+            label = None
+            if key not in legend_shown:
+                label = f"{model.title()} - {split_readable.get(split, split)}"
+                legend_shown.add(key)
+            ax.scatter(
+                x,
+                y,
+                c=color_map.get(split, "#777777"),
+                marker=marker_map.get(model, "o"),
+                edgecolor="white",
+                linewidths=0.5,
+                s=35,
+                label=label,
+                alpha=0.85,
+            )
+
+        # Draw safety (base->defense1 on malicious) and privacy (defense1->defense2 on privacy)
+        safety_start = point_lookup.get(("base", "malicious"))
+        safety_end = point_lookup.get(("defense1", "malicious"))
+        if safety_start and safety_end:
+            ax.annotate(
+                "",
+                xy=safety_end,
+                xytext=safety_start,
+                arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=2),
+            )
+            ax.text(
+                (safety_start[0] + safety_end[0]) / 2,
+                (safety_start[1] + safety_end[1]) / 2,
+                "Safety shift\n变动",
+                color="#ff7f0e",
+                fontsize=9,
+                ha="left",
+                va="bottom",
+            )
+
+        privacy_start = point_lookup.get(("defense1", "privacy"))
+        privacy_end = point_lookup.get(("defense2", "privacy"))
+        if privacy_start and privacy_end:
+            ax.annotate(
+                "",
+                xy=privacy_end,
+                xytext=privacy_start,
+                arrowprops=dict(arrowstyle="->", color="#9467bd", lw=2),
+            )
+            ax.text(
+                (privacy_start[0] + privacy_end[0]) / 2,
+                (privacy_start[1] + privacy_end[1]) / 2,
+                "Privacy shift\n变动",
+                color="#9467bd",
+                fontsize=9,
+                ha="right",
+                va="top",
+            )
+
+        ax.set_title(f"Layer model.layers.{layer} – PCA projection", fontsize=11)
+        ax.set_xlabel("Projection dimension 1", fontsize=9)
+        ax.set_ylabel("Projection dimension 2", fontsize=9)
+        ax.grid(True, linestyle="--", alpha=0.25)
+        ax.legend(fontsize=8, loc="best")
+
+    # Hide any unused axes
+    for extra_ax in axes[len(valid_layers):]:
+        extra_ax.axis("off")
+
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=200)
@@ -245,6 +474,7 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
         "privacy": privacy_shift,
         "interference": interference_shift,
     }
+    activation_deltas = _compute_activation_deltas(layer_means, selected_layers)
     shift_norms = {name: torch.norm(vec).item() for name, vec in shift_vectors.items()}
     shift_cosines = _pairwise_cosine_table(shift_vectors)
 
@@ -291,6 +521,7 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
         },
         "activation_shift_norms": shift_norms,
         "activation_shift_cosines": shift_cosines,
+        "activation_deltas": activation_deltas,
         "parameter_alignment": per_layer_param,
     }
 
@@ -310,6 +541,12 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
     labels = list(shift_vectors.keys())
     cosine_matrix = np.array([[shift_cosines[row][col] for col in labels] for row in labels])
     _save_heatmap(cosine_matrix, labels, heatmap_path)
+
+    shift_change_path = results_dir / "activation_shift_changes.png"
+    _save_shift_change_plot(activation_deltas, shift_change_path)
+
+    projection_path = results_dir / "activation_shift_projection.png"
+    _save_activation_projection_plot(layer_means, selected_layers, projection_path)
 
     summary_lines = [
         "Sequential defense alignment:",
