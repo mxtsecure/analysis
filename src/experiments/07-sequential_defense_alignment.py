@@ -14,21 +14,24 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analysis.key_layers import collect_last_token_hidden_states
 from data.datasets import RequestDataset, build_dual_dataset
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="Path to the base (pre-defense) checkpoint")
-    parser.add_argument("--defense1", required=True, help="Path to the first defense checkpoint")
-    parser.add_argument("--defense2", required=True, help="Path to the second defense checkpoint")
-    parser.add_argument("--normal", required=True, help="Path to D_norm JSONL")
-    parser.add_argument("--malicious", required=True, help="Path to D_mal JSONL")
-    parser.add_argument("--privacy-data", required=True, help="Path to D_priv JSONL")
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to the base (pre-defense) checkpoint")
+    parser.add_argument("--defense1", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Path to the first defense checkpoint")
+    parser.add_argument("--defense2", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the second defense checkpoint")
+    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
+    parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
+    parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
     parser.add_argument(
         "--layers",
-        default=None,
+        default="7",
         help="Comma separated list of layer indices to analyse (default: 10 evenly spaced)",
     )
     parser.add_argument("--max-malicious", type=int, default=512, help="Max samples drawn from D_mal")
@@ -39,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("analysis_results/07-sequential_defense_alignment"),
+        default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/07-sequential_defense_alignment/Llama-3.2-1B-Instruct-tofu"),
         help="Directory where the aggregated metrics are stored",
     )
     parser.add_argument(
