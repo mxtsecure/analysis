@@ -85,9 +85,9 @@ def _fit_projection(features: np.ndarray, method: str) -> np.ndarray:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/gemma-2-2b-it-tofu", help="Base model name or path")
-    parser.add_argument("--safety", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/gemma-2-2b-it-tofu-DPO", help="Safety fine-tuned model")
-    parser.add_argument("--privacy", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/gemma-2-2b-it-tofu/gemma-2-2b-it-tofu-NPO", help="Privacy fine-tuned model")
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Mistral-7B-Instruct-v0.3-tofu", help="Base model name or path")
+    parser.add_argument("--safety", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Mistral-7b-instruct-v0.3-tofu-DPO", help="Safety fine-tuned model")
+    parser.add_argument("--privacy", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Mistral-7B-Instruct-v0.3-tofu/Mistral-7B-Instruct-v0.3-tofu-DPO-NPO", help="Privacy fine-tuned model")
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
     parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
     parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--projection", choices=["pca", "tsne", "umap"], default="pca", help="Projection method")
-    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/05-conflict/gemma-2-2b-it-tofu"), help="Output directory")
+    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/05-conflict/Mistral-7B-Instruct-v0.3-tofu"), help="Output directory")
     args = parser.parse_args()
     if len(args.layer) == 1:
         args.layer = args.layer[0]
