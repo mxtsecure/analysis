@@ -317,6 +317,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-start", type=int, default=9, help="First layer to scale (inclusive)")
     parser.add_argument("--layer-end", type=int, default=10, help="Last layer to scale (exclusive)")
     parser.add_argument("--scale-factor", type=float, default=1.2, help="Multiplicative factor for scaling")
+    parser.add_argument(
+        "--conflict-layers",
+        type=str,
+        default=None,
+        help="Comma-separated list of potential conflict layer indices to scale individually",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -374,23 +380,59 @@ def main() -> None:  # pragma: no cover - CLI
         es_batch_size=args.es_batch_size,
     )
 
-    layer_range = LayerRange(start=args.layer_start, end=args.layer_end)
-    scaled_model = scale_model_layers(base_model, layer_range=layer_range, scale_factor=args.scale_factor)
-    scaled_model.to(device)
+    conflict_layers = None
+    if args.conflict_layers:
+        try:
+            conflict_layers = [int(item.strip()) for item in args.conflict_layers.split(",") if item.strip()]
+        except ValueError as exc:  # pragma: no cover - CLI validation
+            raise ValueError("--conflict-layers must be a comma-separated list of integers") from exc
 
-    scaled_metrics = evaluate_model(
-        scaled_model,
-        tokenizer,
-        safety_prompts,
-        forget_dataset,
-        judge,
-        device=device,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        asr_threshold=args.asr_threshold,
-        es_batch_size=args.es_batch_size,
-    )
+    scaled_metrics = {}
+    if conflict_layers:
+        for layer_idx in conflict_layers:
+            layer_range = LayerRange(start=layer_idx, end=layer_idx + 1)
+            scaled_model = scale_model_layers(
+                base_model, layer_range=layer_range, scale_factor=args.scale_factor
+            )
+            scaled_model.to(device)
+
+            metrics = evaluate_model(
+                scaled_model,
+                tokenizer,
+                safety_prompts,
+                forget_dataset,
+                judge,
+                device=device,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                asr_threshold=args.asr_threshold,
+                es_batch_size=args.es_batch_size,
+            )
+            scaled_metrics[str(layer_idx)] = metrics
+            del scaled_model
+            if torch.cuda.is_available():  # pragma: no cover - depends on hardware
+                torch.cuda.empty_cache()
+    else:
+        layer_range = LayerRange(start=args.layer_start, end=args.layer_end)
+        scaled_model = scale_model_layers(
+            base_model, layer_range=layer_range, scale_factor=args.scale_factor
+        )
+        scaled_model.to(device)
+
+        scaled_metrics = evaluate_model(
+            scaled_model,
+            tokenizer,
+            safety_prompts,
+            forget_dataset,
+            judge,
+            device=device,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            asr_threshold=args.asr_threshold,
+            es_batch_size=args.es_batch_size,
+        )
 
     summary = {
         "base": base_metrics,
@@ -400,6 +442,7 @@ def main() -> None:  # pragma: no cover - CLI
             "layer_start": args.layer_start,
             "layer_end": args.layer_end,
             "scale_factor": args.scale_factor,
+            "conflict_layers": conflict_layers,
             "datasets": {
                 "safety": str(args.safety_dataset) if args.safety_dataset else None,
                 "forget": str(args.forget_dataset) if args.forget_dataset else None,
