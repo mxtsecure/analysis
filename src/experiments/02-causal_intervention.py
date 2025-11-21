@@ -316,7 +316,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forget-dataset", type=Path, default=None, help="Path to TOFU forget JSONL")
     parser.add_argument("--layer-start", type=int, default=9, help="First layer to scale (inclusive)")
     parser.add_argument("--layer-end", type=int, default=10, help="Last layer to scale (exclusive)")
-    parser.add_argument("--scale-factor", type=float, default=0.8, help="Multiplicative factor for scaling")
+    parser.add_argument("--scale-factor", type=float, default=1.2, help="Multiplicative factor for scaling")
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.9)
