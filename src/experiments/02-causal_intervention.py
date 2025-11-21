@@ -16,14 +16,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.layer_scaling import LayerRange, scale_model_layers
 from models.md_judge import MDJudgeEvaluator
+import random
 
 
-def _ensure_pad_token(tokenizer) -> None:
-    if tokenizer.pad_token_id is None:
-        if tokenizer.eos_token_id is not None:
-            tokenizer.pad_token = tokenizer.eos_token
-        else:  # pragma: no cover - only triggered for unusual tokenizers
-            tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
 
 def _load_jsonl(path: Path | str) -> List[dict]:
@@ -200,7 +195,7 @@ def generate_responses(
             result = model.generate(
                 **encoded,
                 generation_config=generation_config,
-                num_return_sequences=1,
+                # num_return_sequences=1,
             )
         generated = result[0, encoded["input_ids"].size(-1) :]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -228,6 +223,7 @@ def compute_attack_success_rate(
         temperature=temperature,
         top_p=top_p,
     )
+    print(responses)
     pairs = list(zip(prompts, responses))
     scores = judge.score(pairs).scores
     success = sum(1 for score in scores if score >= success_threshold)
@@ -314,14 +310,15 @@ def evaluate_model(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Base model identifier")
-    parser.add_argument("--safety-dataset", type=Path, default=None, help="Path to malicious prompts JSONL")
-    parser.add_argument("--forget-dataset", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy_with_answer.jsonl", help="Path to TOFU forget JSONL")
-    parser.add_argument("--layer-start", type=int, default=15, help="First layer to scale (inclusive)")
-    parser.add_argument("--layer-end", type=int, default=16, help="Last layer to scale (exclusive)")
-    parser.add_argument("--scale-factor", type=float, default=1.2, help="Multiplicative factor for scaling")
+    parser.add_argument("--model", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-NPO-DPO", help="Base model identifier")
+    parser.add_argument("--tokenizer_path", default="meta-llama/Llama-3.2-1B-Instruct", help="Base model identifier")
+    parser.add_argument("--safety-dataset", type=Path, default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety_salad.jsonl", help="Path to malicious prompts JSONL")
+    parser.add_argument("--forget-dataset", type=Path, default=None, help="Path to TOFU forget JSONL")
+    parser.add_argument("--layer-start", type=int, default=9, help="First layer to scale (inclusive)")
+    parser.add_argument("--layer-end", type=int, default=10, help="Last layer to scale (exclusive)")
+    parser.add_argument("--scale-factor", type=float, default=0.8, help="Multiplicative factor for scaling")
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--asr-threshold", type=int, default=4)
     parser.add_argument("--es-batch-size", type=int, default=4)
@@ -334,10 +331,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:  # pragma: no cover - CLI
+    # Set random seed
+    seed = 42
+    if seed is not None:
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     args = parse_args()
     device = torch.device(args.device)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=False)
-    _ensure_pad_token(tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True, use_fast=False)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    # tokenizer.padding_side = 'right'
 
     safety_prompts: Optional[List[str]] = None
     if args.safety_dataset is not None:
@@ -347,12 +352,13 @@ def main() -> None:  # pragma: no cover - CLI
     if args.forget_dataset is not None:
         forget_dataset = load_forget_dataset(args.forget_dataset, tokenizer=tokenizer)
 
-    base_model = AutoModelForCausalLM.from_pretrained(args.model, trust_remote_code=True)
+    base_model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16,trust_remote_code=True)
     base_model.to(device)
 
     judge: Optional[MDJudgeEvaluator] = None
     if safety_prompts is not None:
         judge = MDJudgeEvaluator()
+
 
     base_metrics = evaluate_model(
         base_model,

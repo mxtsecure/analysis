@@ -25,8 +25,8 @@ from data.datasets import RequestDataset, build_dual_dataset
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to the base (pre-defense) checkpoint")
-    parser.add_argument("--defense1", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Path to the first defense checkpoint")
-    parser.add_argument("--defense2", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-NPO-DPO", help="Path to the second defense checkpoint")
+    parser.add_argument("--defense1", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Path to the first defense checkpoint")
+    parser.add_argument("--defense2", default="/home/xiangtao/Models/saves/unlearn/tofu_Llama-3.2-1B-Instruct_forget10_NPO/checkpoint-120", help="Path to the second defense checkpoint")
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
     parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
     parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
@@ -378,6 +378,9 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
     device = torch.device(args.device)
 
     tokenizer = AutoTokenizer.from_pretrained(args.base)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'right'
     datasets = build_dual_dataset(
         normal_path=args.normal,
         malicious_path=args.malicious,
