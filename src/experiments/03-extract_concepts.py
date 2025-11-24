@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
         "--layer",
         dest="layer",
         action="append",
-        default="0,1,2,3,4,5,6,7,8,9",
+        default="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
         help=(
             "Module name(s) for activation capture. Repeat the flag or provide a "
             "comma-separated list to capture multiple layers."
@@ -95,11 +95,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis/results/01-concepts_vector/Llama-3.2-1B-Instruct-tofu/accurate"), help="Output directory")
+    parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/03-concepts_vector/Llama-3.2-1B-Instruct-tofu/accurate/pca"), help="Output directory")
     parser.add_argument(
         "--method",
         choices=["mean", "pca"],
-        default="mean",
+        default="pca",
         help="Aggregation method for concept vectors",
     )
     parser.add_argument(
@@ -139,6 +139,9 @@ def make_dataloaders(tokenizer, args) -> tuple[DataLoader, DataLoader, DataLoade
 def extract_concept_vectors(args: argparse.Namespace) -> dict:
     device = torch.device(args.device)
     tokenizer = AutoTokenizer.from_pretrained(args.base)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'right'
     base_model = AutoModelForCausalLM.from_pretrained(args.base, dtype=torch.float16).to(device)
     safety_model = AutoModelForCausalLM.from_pretrained(args.safety, dtype=torch.float16).to(device)
     privacy_model = AutoModelForCausalLM.from_pretrained(args.privacy, dtype=torch.float16).to(device)

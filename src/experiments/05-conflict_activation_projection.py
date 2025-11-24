@@ -85,13 +85,13 @@ def _fit_projection(features: np.ndarray, method: str) -> np.ndarray:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/gemma-2-2b-it-tofu", help="Base model name or path")
-    parser.add_argument("--safety", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/gemma-2-2b-it-tofu-DPO", help="Safety fine-tuned model")
-    parser.add_argument("--privacy", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/gemma-2-2b-it-tofu/gemma-2-2b-it-tofu-NPO", help="Privacy fine-tuned model")
+    parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Base model name or path")
+    parser.add_argument("--safety", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Safety fine-tuned model")
+    parser.add_argument("--privacy", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Privacy fine-tuned model")
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
     parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
     parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
-    parser.add_argument("--layer", dest="layer", action="append", default="12", help="Target layer for activation capture")
+    parser.add_argument("--layer", dest="layer", action="append", default="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15", help="Target layer for activation capture")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--projection", choices=["pca", "tsne", "umap"], default="pca", help="Projection method")
