@@ -28,7 +28,7 @@ def _normalize_layer_identifier(raw: str) -> str:
     return stripped
 
 
-def _parse_layer(arg_value: str | list[str]) -> str:
+def _parse_layers(arg_value: str | list[str]) -> list[str]:
     if isinstance(arg_value, list):
         entries = arg_value
     else:
@@ -39,9 +39,9 @@ def _parse_layer(arg_value: str | list[str]) -> str:
             name = part.strip()
             if name:
                 layers.append(_normalize_layer_identifier(name))
-    if len(layers) != 1:
-        raise ValueError("Exactly one layer must be provided for projection experiments")
-    return layers[0]
+    if not layers:
+        raise ValueError("At least one layer must be provided for projection experiments")
+    return layers
 
 
 def _select_last_token(batch: ActivationBatch) -> np.ndarray:
@@ -97,8 +97,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--projection", choices=["pca", "tsne", "umap"], default="pca", help="Projection method")
     parser.add_argument("--output", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/05-conflict/gemma-2-2b-it-tofu"), help="Output directory")
     args = parser.parse_args()
-    if len(args.layer) == 1:
-        args.layer = args.layer[0]
     return args
 
 
@@ -123,57 +121,57 @@ def conflict_projection(args: argparse.Namespace) -> None:
     safety_model = AutoModelForCausalLM.from_pretrained(args.safety, torch_dtype=torch.float16).to(device)
     privacy_model = AutoModelForCausalLM.from_pretrained(args.privacy, torch_dtype=torch.float16).to(device)
 
-    layer = _parse_layer(args.layer)
+    layers = _parse_layers(args.layer)
 
-    def capture(model, dataloader, desc: str) -> np.ndarray:
-        activations = forward_dataset(model, dataloader, layer, device, desc)
-        if isinstance(activations, dict):
-            activation_batch = activations[layer]
-        else:
-            activation_batch = activations
-        return _select_last_token(activation_batch)
+    def capture(model, dataloader, desc: str) -> dict[str, np.ndarray]:
+        activations = forward_dataset(model, dataloader, layers, device, desc)
+        if not isinstance(activations, dict):
+            activations = {layers[0]: activations}
+        return {name: _select_last_token(batch) for name, batch in activations.items()}
 
     base_safety = capture(base_model, malicious_loader, "Base D_mal")
     defense_safety = capture(safety_model, malicious_loader, "Safety model D_mal")
     base_privacy = capture(base_model, privacy_loader, "Base D_priv")
     defense_privacy = capture(privacy_model, privacy_loader, "Privacy model D_priv")
 
-    groups = {
-        "base_safety": base_safety,
-        "defense_safety": defense_safety,
-        "base_privacy": base_privacy,
-        "defense_privacy": defense_privacy,
-    }
-    feature_matrix = np.concatenate(list(groups.values()), axis=0)
-    projected = _fit_projection(feature_matrix, args.projection)
+    for layer in layers:
+        groups = {
+            "base_safety": base_safety[layer],
+            "defense_safety": defense_safety[layer],
+            "base_privacy": base_privacy[layer],
+            "defense_privacy": defense_privacy[layer],
+        }
+        feature_matrix = np.concatenate(list(groups.values()), axis=0)
+        projected = _fit_projection(feature_matrix, args.projection)
 
-    split_points: dict[str, np.ndarray] = {}
-    start = 0
-    for name, tensor in groups.items():
-        length = tensor.shape[0]
-        split_points[name] = projected[start : start + length]
-        start += length
+        split_points: dict[str, np.ndarray] = {}
+        start = 0
+        for name, tensor in groups.items():
+            length = tensor.shape[0]
+            split_points[name] = projected[start : start + length]
+            start += length
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        args.output / "projection_coords.npz",
-        **split_points,
-        layer=layer,
-        method=args.projection,
-    )
+        layer_dir = args.output / f"layer-{layer.replace('.', '_')}"
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            layer_dir / "projection_coords.npz",
+            **split_points,
+            layer=layer,
+            method=args.projection,
+        )
 
-    projection_data = ConflictProjectionData(
-        base_safety=split_points["base_safety"],
-        defense_safety=split_points["defense_safety"],
-        base_privacy=split_points["base_privacy"],
-        defense_privacy=split_points["defense_privacy"],
-    )
-    title = f"Layer {layer} — {args.projection.upper()} projection"
-    plot_conflict_projection(
-        projection_data,
-        args.output / "conflict_projection.png",
-        title=title,
-    )
+        projection_data = ConflictProjectionData(
+            base_safety=split_points["base_safety"],
+            defense_safety=split_points["defense_safety"],
+            base_privacy=split_points["base_privacy"],
+            defense_privacy=split_points["defense_privacy"],
+        )
+        title = f"Layer {layer} — {args.projection.upper()} projection"
+        plot_conflict_projection(
+            projection_data,
+            layer_dir / "conflict_projection.png",
+            title=title,
+        )
 
 
 def main() -> None:
