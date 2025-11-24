@@ -42,18 +42,26 @@ def _select_final_token(
         # Already (batch, hidden_dim); nothing to slice.
         return hidden_states
 
+    if hidden_states.dim() < 3:
+        raise ValueError("Hidden states must include a sequence dimension when >2D")
+
+    num_tokens = hidden_states.size(1)
     if attention_mask is not None:
         if attention_mask.dim() != 2:
             raise ValueError("Attention mask must have shape (batch, seq_len)")
         if attention_mask.size(0) != hidden_states.size(0):
             raise ValueError("Attention mask batch size must match hidden states")
 
-        lengths = attention_mask.sum(dim=1) - 1
-        lengths = lengths.clamp(min=0).unsqueeze(-1).unsqueeze(-1)
-        lengths = lengths.expand(-1, 1, hidden_states.size(-1))
-        return hidden_states.gather(1, lengths).squeeze(1)
+        mask = attention_mask.to(hidden_states.device)
+        indices = mask.to(torch.int64).sum(dim=1) - 1
+        indices = torch.clamp(indices, min=0)
+    else:
+        indices = torch.full(
+            (hidden_states.size(0),), num_tokens - 1, dtype=torch.long, device=hidden_states.device
+        )
 
-    return hidden_states[:, -1, ...]
+    batch_indices = torch.arange(hidden_states.size(0), device=hidden_states.device)
+    return hidden_states[batch_indices, indices, ...]
 
 
 def get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
