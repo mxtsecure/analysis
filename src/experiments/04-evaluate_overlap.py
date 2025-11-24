@@ -39,19 +39,25 @@ def main() -> None:  # pragma: no cover - CLI
         raw_overlap = torch.dot(v_safety.direction, v_privacy.direction).item()
         similarity = cosine_similarity(v_safety, v_privacy)
         magnitude_weighted_overlap = raw_overlap / (max(safety_norm, privacy_norm) + 1e-12)
+        projection_safety_on_privacy = raw_overlap / (privacy_norm + 1e-12)
+        projection_privacy_on_safety = raw_overlap / (safety_norm + 1e-12)
 
         results[layer] = {
             "cosine_similarity": round(similarity, 6),
             "safety_norm": round(safety_norm, 6),
             "privacy_norm": round(privacy_norm, 6),
             "magnitude_weighted_overlap": round(magnitude_weighted_overlap, 6),
+            "projection_safety_on_privacy": round(projection_safety_on_privacy, 6),
+            "projection_privacy_on_safety": round(projection_privacy_on_safety, 6),
         }
 
         print(
             "  "
             f"safety_norm={safety_norm:.6f}, privacy_norm={privacy_norm:.6f}, "
             f"cosine_similarity={similarity:.6f}, "
-            f"magnitude_weighted_overlap={magnitude_weighted_overlap:.6f}"
+            f"magnitude_weighted_overlap={magnitude_weighted_overlap:.6f}, "
+            f"safety→privacy_projection={projection_safety_on_privacy:.6f}, "
+            f"privacy→safety_projection={projection_privacy_on_safety:.6f}"
         )
     args.concepts_vector_overlap_path.parent.mkdir(parents=True, exist_ok=True)
     with open(args.concepts_vector_overlap_path, "w", encoding="utf-8") as f:
