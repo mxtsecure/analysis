@@ -41,6 +41,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--defense1-split",
+        choices=["malicious", "privacy"],
+        default="malicious",
+        help="Dataset split representing the target of defense1 (default: malicious / safety)",
+    )
+    parser.add_argument(
+        "--defense2-split",
+        choices=["malicious", "privacy"],
+        default="privacy",
+        help="Dataset split representing the target of defense2 (default: privacy)",
+    )
+    parser.add_argument(
+        "--interference-split",
+        choices=["malicious", "privacy"],
+        default="malicious",
+        help="Dataset split used to measure interference between defenses",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/07-sequential_defense_alignment/Llama-3.2-1B-Instruct-tofu"),
@@ -420,25 +438,34 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
         for split, states in splits.items():
             layer_means[model_name][split] = _compute_layer_means(states, selected_layers)
 
-    safety_shift = _difference_vector(
-        layer_means["base"]["malicious"],
-        layer_means["defense1"]["malicious"],
+    required_splits = {
+        "defense1": args.defense1_split,
+        "defense2": args.defense2_split,
+        "interference": args.interference_split,
+    }
+    for key, split in required_splits.items():
+        if split == "privacy" and datasets.privacy is None:
+            raise ValueError(f"Split '{split}' required for {key} shift but privacy dataset is missing")
+
+    defense1_shift = _difference_vector(
+        layer_means["base"][args.defense1_split],
+        layer_means["defense1"][args.defense1_split],
         selected_layers,
     )
-    privacy_shift = _difference_vector(
-        layer_means["defense1"]["privacy"],
-        layer_means["defense2"]["privacy"],
+    defense2_shift = _difference_vector(
+        layer_means["defense1"][args.defense2_split],
+        layer_means["defense2"][args.defense2_split],
         selected_layers,
     )
     interference_shift = _difference_vector(
-        layer_means["defense1"]["malicious"],
-        layer_means["defense2"]["malicious"],
+        layer_means["defense1"][args.interference_split],
+        layer_means["defense2"][args.interference_split],
         selected_layers,
     )
 
     shift_vectors = {
-        "safety": safety_shift,
-        "privacy": privacy_shift,
+        "defense1": defense1_shift,
+        "defense2": defense2_shift,
         "interference": interference_shift,
     }
     activation_deltas = _compute_activation_deltas(layer_means, selected_layers)
@@ -485,6 +512,9 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
             "max_privacy": args.max_privacy,
             "batch_size": args.batch_size,
             "seed": args.seed,
+            "defense1_split": args.defense1_split,
+            "defense2_split": args.defense2_split,
+            "interference_split": args.interference_split,
         },
         "activation_shift_norms": shift_norms,
         "activation_shift_cosines": shift_cosines,
@@ -519,12 +549,12 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
 
     summary_lines = [
         "Sequential defense alignment:",
-        f"  Safety shift norm (D_mal, defense1-base): {shift_norms['safety']:.4f}",
-        f"  Privacy shift norm (D_priv, defense2-defense1): {shift_norms['privacy']:.4f}",
-        f"  Interference shift norm (D_mal, defense2-defense1): {shift_norms['interference']:.4f}",
-        f"  Cosine(safety, privacy): {shift_cosines['safety']['privacy']:.4f}",
-        f"  Cosine(safety, interference): {shift_cosines['safety']['interference']:.4f}",
-        f"  Cosine(privacy, interference): {shift_cosines['privacy']['interference']:.4f}",
+        f"  Defense1 shift norm (D_{args.defense1_split}, defense1-base): {shift_norms['defense1']:.4f}",
+        f"  Defense2 shift norm (D_{args.defense2_split}, defense2-defense1): {shift_norms['defense2']:.4f}",
+        f"  Interference shift norm (D_{args.interference_split}, defense2-defense1): {shift_norms['interference']:.4f}",
+        f"  Cosine(defense1, defense2): {shift_cosines['defense1']['defense2']:.4f}",
+        f"  Cosine(defense1, interference): {shift_cosines['defense1']['interference']:.4f}",
+        f"  Cosine(defense2, interference): {shift_cosines['defense2']['interference']:.4f}",
     ]
 
     if per_layer_param:
