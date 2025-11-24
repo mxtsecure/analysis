@@ -250,6 +250,8 @@ def _save_activation_projection_plot(
     layers: Sequence[int],
     path: Path,
     *,
+    defense1_split: str,
+    defense2_split: str,
     max_points_per_group: int = 250,
     seed: int = 0,
 ) -> None:
@@ -345,9 +347,11 @@ def _save_activation_projection_plot(
                 zorder=5,
             )
 
+        d1_label = split_readable.get(defense1_split, defense1_split)
+        d2_label = split_readable.get(defense2_split, defense2_split)
         transitions = [
-            (("base", "malicious"), ("defense1", "malicious"), "Base → Defense1 (Safety)"),
-            (("defense1", "privacy"), ("defense2", "privacy"), "Defense1 → Defense2 (Privacy)"),
+            (("base", defense1_split), ("defense1", defense1_split), f"Base → Defense1 ({d1_label})"),
+            (("defense1", defense2_split), ("defense2", defense2_split), f"Defense1 → Defense2 ({d2_label})"),
         ]
         for start, end, title in transitions:
             start_centroid = centroid_map.get(start)
@@ -544,6 +548,8 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
         activation_states,
         selected_layers,
         projection_path,
+        defense1_split=args.defense1_split,
+        defense2_split=args.defense2_split,
         seed=args.seed,
     )
 
