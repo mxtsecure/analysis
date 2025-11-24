@@ -25,6 +25,37 @@ class ActivationBatch:
     attention_mask: Optional[torch.Tensor] = None
 
 
+def _select_final_token(
+    hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor]
+) -> torch.Tensor:
+    """Return the activation at the final token position for each sample.
+
+    If an ``attention_mask`` is available, the last non-padding token is used per
+    sequence. Otherwise, the activations from the final sequence position are
+    selected.
+    """
+
+    if hidden_states.dim() < 2:
+        raise ValueError("Hidden states must have at least batch and sequence dimensions")
+
+    if hidden_states.dim() == 2:
+        # Already (batch, hidden_dim); nothing to slice.
+        return hidden_states
+
+    if attention_mask is not None:
+        if attention_mask.dim() != 2:
+            raise ValueError("Attention mask must have shape (batch, seq_len)")
+        if attention_mask.size(0) != hidden_states.size(0):
+            raise ValueError("Attention mask batch size must match hidden states")
+
+        lengths = attention_mask.sum(dim=1) - 1
+        lengths = lengths.clamp(min=0).unsqueeze(-1).unsqueeze(-1)
+        lengths = lengths.expand(-1, 1, hidden_states.size(-1))
+        return hidden_states.gather(1, lengths).squeeze(1)
+
+    return hidden_states[:, -1, ...]
+
+
 def get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
     """Resolve a ``module_name`` string into the corresponding sub-module."""
 
@@ -108,4 +139,14 @@ def compute_activation_difference(
 
     if base.hidden_states.shape != finetuned.hidden_states.shape:
         raise ValueError("Activation tensors must have the same shape for differencing")
-    return finetuned.hidden_states - base.hidden_states
+
+    if base.attention_mask is not None and finetuned.attention_mask is not None:
+        if base.attention_mask.shape != finetuned.attention_mask.shape:
+            raise ValueError("Attention masks must have matching shapes for differencing")
+        attention_mask = base.attention_mask
+    else:
+        attention_mask = base.attention_mask or finetuned.attention_mask
+
+    base_final = _select_final_token(base.hidden_states, attention_mask)
+    finetuned_final = _select_final_token(finetuned.hidden_states, attention_mask)
+    return finetuned_final - base_final

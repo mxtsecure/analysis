@@ -15,6 +15,7 @@ class ConceptVector:
     direction: torch.Tensor
     method: str
     explained_variance: float | None = None
+    raw_norm: float | None = None
 
     def project(self, activations: torch.Tensor) -> torch.Tensor:
         """Project activations onto the concept direction."""
@@ -33,16 +34,23 @@ def aggregate_difference(
         direction = flat.mean(dim=0)
         norm = direction.norm(p=2)
         direction = direction / (norm + 1e-12)
-        return ConceptVector(direction=direction, method="mean", explained_variance=None)
+        return ConceptVector(
+            direction=direction,
+            method="mean",
+            explained_variance=None,
+            raw_norm=float(norm),
+        )
     if method == "pca":
         pca = PCA(n_components=1)
         pca.fit(flat.cpu().numpy())
         direction = torch.from_numpy(pca.components_[0]).to(delta_activations.device)
-        direction = direction / (direction.norm(p=2) + 1e-12)
+        norm = direction.norm(p=2)
+        direction = direction / (norm + 1e-12)
         return ConceptVector(
             direction=direction,
             method="pca",
             explained_variance=float(pca.explained_variance_ratio_[0]),
+            raw_norm=float(norm),
         )
     raise ValueError(f"Unknown aggregation method: {method}")
 
@@ -55,8 +63,14 @@ def purify_concept_vector(
 
     projection = torch.dot(mixed.direction, nuisance.direction)
     purified_direction = mixed.direction - projection * nuisance.direction
-    purified_direction = purified_direction / (purified_direction.norm(p=2) + 1e-12)
-    return ConceptVector(direction=purified_direction, method="purified")
+    norm = purified_direction.norm(p=2)
+    purified_direction = purified_direction / (norm + 1e-12)
+    return ConceptVector(
+        direction=purified_direction,
+        method="purified",
+        explained_variance=None,
+        raw_norm=float(norm),
+    )
 
 
 def cosine_similarity(vec_a: ConceptVector, vec_b: ConceptVector) -> float:
