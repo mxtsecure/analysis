@@ -17,8 +17,8 @@ from analysis.concept_vectors import ConceptVector, cosine_similarity
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--concepts_vector_path", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/03-concepts_vector/gemma-2-2b-it-tofu/accurate"), help="Path to concepts vector directory")
-    parser.add_argument("--concepts_vector_overlap_path", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/04-concepts_vector_overlap/gemma-2-2b-it-tofu/accurate/result_pca.json"), help="Path to concepts vector directory")
+    parser.add_argument("--concepts_vector_path", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/03-concepts_vector/Llama-3.2-1B-Instruct-tofu/accurate/pca"), help="Path to concepts vector directory")
+    parser.add_argument("--concepts_vector_overlap_path", type=Path, default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/04-concepts_vector_overlap/Llama-3.2-1B-Instruct-tofu/accurate/result_pca.json"), help="Path to concepts vector directory")
     return parser.parse_args()
 
 

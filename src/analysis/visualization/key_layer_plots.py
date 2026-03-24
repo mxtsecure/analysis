@@ -10,15 +10,20 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
-# 假设这些类和类型是可用的
-from analysis.key_layers import KeyLayerAnalysisResult, CosineCurves, ParameterCurves, KeyLayerIntervals 
+from analysis.key_layers import CosineCurves
 
-LayerRange = Tuple[int, int]
-# --- 样式常量 ---
-STYLE_FONT = {'family': 'sans-serif', 'weight': 'normal'}
+# --- 样式常量（美化用）---
+STYLE_FONT = {'family': 'sans-serif', 'weight': 'normal', 'size': 8}
 plt.rc('font', **STYLE_FONT)
+# 配色：N-N / N-R / Angular，区分清晰且协调
+COLOR_NN = '#C45C2A'       # 暖橙
+COLOR_NR = '#2D7D6E'       # 青绿
+COLOR_ANGLE = '#4A6FA5'    # 蓝灰
+FILL_NN = '#E8B89A'        # 浅橙
+FILL_NR = '#A8D5C8'        # 浅青绿
+GRID_COLOR = '#E0E0E0'
+SPINE_COLOR = '#444444'
 # -----------------
-
 
 def _normalise_path(path: Path | str) -> Path:
     resolved = Path(path)
@@ -26,152 +31,118 @@ def _normalise_path(path: Path | str) -> Path:
         resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved
 
-
-def _apply_interval_shading(
-    axes: Sequence[Axes],
-    representational_segments: Sequence[LayerRange],
-    parameter_segments: Sequence[LayerRange],
-    num_layers: int,
-) -> None:
-    """Apply vertical shading for representational and parameter spans."""
-    for ax in axes:
-        for rep_start, rep_end in representational_segments:
-            rep_end_safe = min(rep_end, num_layers - 1)
-            ax.axvspan(
-                rep_start - 0.5,
-                rep_end_safe + 0.5,
-                color="tab:blue",
-                alpha=0.08,
-                label=None,
-            )
-        for par_start, par_end in parameter_segments:
-            par_end_safe = min(par_end, num_layers - 1)
-            ax.axvspan(
-                par_start - 0.5,
-                par_end_safe + 0.5,
-                color="tab:orange",
-                alpha=0.12,
-                label=None,
-            )
-
-
-def _apply_vertical_markers(
-    axes: Sequence[Axes],
-    layers: Iterable[int],
-    linestyle: str = "--",
-    color: str = "red",  # 使用纯红
-    alpha: float = 0.8, # 增加 alpha
-) -> None:
-    """Apply red dashed vertical lines at critical layers."""
-    for layer in layers:
-        for ax in axes:
-            ax.axvline(layer, linestyle=linestyle, color=color, linewidth=1.5, alpha=alpha)
-
-
-def plot_key_layer_analysis(
-    result: KeyLayerAnalysisResult,
+def plot_dual_key_layer_analysis(
+    baseline1: CosineCurves,
+    defense1: CosineCurves,
+    name1: str,
+    baseline2: CosineCurves,
+    defense2: CosineCurves,
+    name2: str,
     output_path: Path | str,
-    *,
-    title: Optional[str] = None,
-    critical_layers: Optional[Iterable[int]] = None,
-    figsize: Tuple[float, float] = (8.0, 8.0), 
-    dpi: int = 500,
+    # 保持您设定的尺寸 (3.5, 3.0)
+    figsize: Tuple[float, float] = (3.5, 3.0),
+    dpi: int = 300,
+    gap_ylabel: str = "Angular Gap (°)",
 ) -> Path:
-    """Render a stacked summary figure for the key-layer analysis with 3 panels and enhanced style."""
+    """
+    绘制两个防御模型的 angular gap 视角比较图。
 
-    cosine: CosineCurves = result.cosine
-    params: ParameterCurves = result.parameters
-    num_layers = len(cosine.mu_nn)
-    layers = list(range(num_layers))
-
+    - 每个模型占一列
+    - 每列包含两行：
+      上行：Baseline Gap / Defense Gap 双曲线 + 阴影误差带
+      下行：gap_diff = gap_def - gap_base 单曲线
+    """
     output = _normalise_path(output_path)
+    
+    # 2x2：行 = {Gap, GapDiff}，列 = {Model1, Model2}
+    # 不同防御模型（不同列）在幅度上差异可能很大（例如 safety 更明显）。
+    # 因此这里不共享 Y 轴，让每列自动缩放刻度，避免 privacy 曲线被“压扁”。
+    fig, axes = plt.subplots(2, 2, figsize=figsize, sharex=True, sharey=False)
+    fig.patch.set_facecolor('white')
+    
+    configs = [
+        {"baseline": baseline1, "defense": defense1, "name": name1, "col": 0},
+        {"baseline": baseline2, "defense": defense2, "name": name2, "col": 1},
+    ]
 
-    fig: Figure
-    axes: Sequence[Axes]
-    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True) 
+    line_width = 2.0
+    fill_alpha = 0.35
 
-    # --- Panel 1: Cosine similarity statistics ---
-    ax_cos = axes[0]
-    
-    # 曲线
-    ax_cos.plot(layers, cosine.mu_nn, label="N–N Pairs", color="tab:orange", linewidth=2)
-    ax_cos.plot(layers, cosine.mu_nr, label="N–M Pairs", color="tab:green", linewidth=2)
-    
-    lower_nn = [m - s for m, s in zip(cosine.mu_nn, cosine.std_nn)]
-    upper_nn = [m + s for m, s in zip(cosine.mu_nn, cosine.std_nn)]
-    lower_nr = [m - s for m, s in zip(cosine.mu_nr, cosine.std_nr)]
-    upper_nr = [m + s for m, s in zip(cosine.mu_nr, cosine.std_nr)]
-    
-    ax_cos.fill_between(layers, lower_nn, upper_nn, color='bisque', alpha=0.45)
-    ax_cos.fill_between(layers, lower_nr, upper_nr, color='lightgreen', alpha=0.25)
-    
-    # 装饰
-    ax_cos.set_ylabel("Cos_sim Value", fontsize='large')
-    ax_cos.tick_params(axis='both', labelsize='large')
-    ax_cos.legend(loc="upper right", fontsize='medium')
-    ax_cos.grid(True, linewidth=0.8, linestyle='--')
-    ax_cos.set_title("Representation alignment", fontsize='large')
+    def _style_axis(ax: Axes, show_xlabel: bool = False) -> None:
+        ax.set_facecolor('white')
+        ax.tick_params(axis='both', which='major', labelsize=9, colors=SPINE_COLOR)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color(SPINE_COLOR)
+        ax.spines['bottom'].set_color(SPINE_COLOR)
+        ax.grid(True, color=GRID_COLOR, linewidth=0.6, linestyle='-', alpha=0.8)
+        ax.set_axisbelow(True)
+        if show_xlabel:
+            ax.set_xlabel("Layer Index", fontsize=8, color=SPINE_COLOR)
 
-    # --- Panel 2: Angular differences (Δφ) ---
-    ax_angle = axes[1]
-    
-    # 只绘制原始 Δφ 曲线 (Δφ = N-M angle - N-N angle)
-    ax_angle.plot(layers, cosine.delta_phi, label="Mean Angular Difference", 
-                  color="tab:blue", linewidth=2.0)
-    
-    # 装饰
-    ax_angle.set_ylabel("Angle Degree Value", fontsize='large')
-    ax_angle.tick_params(axis='both', labelsize='large')
-    ax_angle.legend(loc="upper right", fontsize='medium')
-    ax_angle.grid(True, linewidth=0.8, linestyle='--')
-    ax_angle.set_title("Angular divergence", fontsize='large')
+    for config in configs:
+        baseline: CosineCurves = config["baseline"]
+        defense: CosineCurves = config["defense"]
+        col = config["col"]
+        title_name = config["name"]
 
-    # --- Panel 3: Parameter differences (MAD) ---
-    ax_params = axes[2]
-    
-    # 绘制参数差异曲线 (MAD)
-    ax_params.plot(layers, params.s_attn, label="|Δθ| attention", color="tab:purple")
-    ax_params.plot(layers, params.s_mlp, label="|Δθ| MLP", color="tab:orange")
-    ax_params.plot(layers, params.s_total, label="|Δθ| total", color="tab:gray", linewidth=2.0)
-    
-    # 装饰
-    ax_params.set_ylabel("Mean |Δθ|", fontsize='large')
-    ax_params.set_xlabel("Layer index", fontsize='large')
-    ax_params.tick_params(axis='both', labelsize='large')
-    ax_params.legend(loc="upper right", fontsize='medium')
-    ax_params.grid(True, linewidth=0.8, linestyle='--')
-    ax_params.set_title("Parameter drift", fontsize='large')
+        num_layers = len(defense.mu_nn)
+        layers = list(range(num_layers))
 
-    # --- 应用区间和标记 ---
-    
-    rep_segments = list(result.intervals.representational)
-    parameter_segments = list(result.intervals.parameter_spans)
-    
-    # _apply_interval_shading(axes, rep_segments, parameter_segments, num_layers)
+        # --- 计算 Gap 相关量 ---
+        gap_base = np.asarray(baseline.delta_phi)
+        gap_def = np.asarray(defense.delta_phi)
 
-    # if critical_layers:
-    #     _apply_vertical_markers(axes, critical_layers)
+        # 角度层面的误差带：简单用 N/R 角度 std 合成
+        base_std = np.sqrt(
+            np.square(np.asarray(baseline.angle_std_nn))
+            + np.square(np.asarray(baseline.angle_std_nr))
+        )
+        def_std = np.sqrt(
+            np.square(np.asarray(defense.angle_std_nn))
+            + np.square(np.asarray(defense.angle_std_nr))
+        )
 
-    # X 轴整数刻度设置
-    axes[-1].xaxis.set_major_locator(MaxNLocator(integer=True))
-    
-    # --- 布局与保存 ---
-    
-    # 调整布局以适应标题
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    
-    # 整体标题
-    if title:
-        fig.suptitle(title, fontsize='x-large', y=0.98) 
-    overlap_segments = []
-    for rep_start, rep_end in rep_segments:
-        for span_start, span_end in parameter_segments:
-            overlap_start = max(rep_start, span_start)
-            overlap_end = min(rep_end, span_end)
-            if overlap_start <= overlap_end:
-                overlap_segments.append((overlap_start, overlap_end))
+        # --- Row 0: Baseline / Defense Angular Gap ---
+        ax_gap = axes[0, col]
+        ax_gap.plot(layers, gap_base, label="Baseline Gap", color=COLOR_NN, linewidth=line_width)
+        ax_gap.plot(layers, gap_def, label="Defense Gap", color=COLOR_NR, linewidth=line_width)
 
+        ax_gap.fill_between(
+            layers,
+            gap_base - base_std,
+            gap_base + base_std,
+            color=FILL_NN,
+            alpha=fill_alpha,
+        )
+        ax_gap.fill_between(
+            layers,
+            gap_def - def_std,
+            gap_def + def_std,
+            color=FILL_NR,
+            alpha=fill_alpha,
+        )
 
-    fig.savefig(output, dpi=dpi)
+        if col == 0:
+            ax_gap.set_ylabel(gap_ylabel, fontsize=8, color=SPINE_COLOR)
+        ax_gap.set_title(title_name, fontsize=8, fontweight='bold', pad=8, color=SPINE_COLOR)
+        ax_gap.legend(loc="upper right", fontsize=8, frameon=True, framealpha=0.95, edgecolor=GRID_COLOR)
+        ax_gap.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        _style_axis(ax_gap, show_xlabel=False)
+
+        # --- Row 1: Gap Difference (Defense - Baseline) ---
+        ax_diff = axes[1, col]
+        gap_diff = gap_def - gap_base
+        ax_diff.plot(layers, gap_diff, label="ΔGap (Def − Base)", color=COLOR_ANGLE, linewidth=line_width)
+        if col == 0:
+            ax_diff.set_ylabel("Gap Difference (°)", fontsize=8, color=SPINE_COLOR)
+        ax_diff.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        _style_axis(ax_diff, show_xlabel=True)
+
+    plt.tight_layout(pad=0.4)
+    plt.subplots_adjust(wspace=0.08, hspace=0.22)
+
+    fig.savefig(output, dpi=dpi, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close(fig)
+    print(f"Comparison plot saved to {output}")
     return output

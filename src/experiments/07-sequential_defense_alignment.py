@@ -25,19 +25,19 @@ from data.datasets import RequestDataset, build_dual_dataset
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/finetune/Llama-3.2-1B-Instruct-tofu", help="Path to the base (pre-defense) checkpoint")
-    parser.add_argument("--defense1", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/different/Llama-3.2-1B-Instruct-tofu-DPO", help="Path to the first defense checkpoint")
-    parser.add_argument("--defense2", default="/home/xiangtao/Models/saves/unlearn/tofu_Llama-3.2-1B-Instruct_forget10_NPO/checkpoint-120", help="Path to the second defense checkpoint")
-    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
-    parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
-    parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
+    parser.add_argument("--defense1", default="/data/xiangtao/projects/crossdefense/code/defense/safety/DPO/DPO_models/Llama-3.2-1B-Instruct-tofu-DPO", help="Path to the first defense checkpoint")
+    parser.add_argument("--defense2", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu-DPO-NPO", help="Path to the second defense checkpoint")
+    parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/mechanistic_analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
+    parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/mechanistic_analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
+    parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/mechanistic_analysis/datasets/risk_data/privacy.jsonl", help="Path to D_priv JSONL")
     parser.add_argument(
         "--layers",
-        default="5,6,7,8",
+        default="7",
         help="Comma separated list of layer indices to analyse (default: 10 evenly spaced)",
     )
     parser.add_argument("--max-malicious", type=int, default=512, help="Max samples drawn from D_mal")
     parser.add_argument("--max-privacy", type=int, default=512, help="Max samples drawn from D_priv")
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -61,13 +61,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/data/xiangtao/projects/crossdefense/code/analysis_results/07-sequential_defense_alignment/Llama-3.2-1B-Instruct-tofu"),
+        default=Path("/data/xiangtao/projects/crossdefense/code/mechanistic_analysis/results/07-sequential_defense_alignment/Llama-3.2-1B-Instruct-tofu-test/"),
         help="Directory where the aggregated metrics are stored",
     )
     parser.add_argument(
         "--run-name",
         default=None,
         help="Optional override for the run sub-directory inside --output-dir",
+    )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Only load saved PCA data and redraw the projection plot (skip models & inference). Requires --output-dir and --run-name.",
     )
     return parser.parse_args()
 
@@ -228,6 +233,10 @@ def _save_heatmap(matrix: np.ndarray, labels: Sequence[str], path: Path) -> None
     plt.close(fig)
 
 
+MODEL_ORDER = ["base", "defense1", "defense2"]
+SPLIT_ORDER = ["malicious", "privacy"]
+
+
 def _pca_project(matrix: torch.Tensor, n_components: int = 2) -> np.ndarray:
     if matrix.ndim != 2:
         matrix = matrix.view(matrix.shape[0], -1)
@@ -245,34 +254,21 @@ def _pca_project(matrix: torch.Tensor, n_components: int = 2) -> np.ndarray:
     return projected
 
 
-def _save_activation_projection_plot(
+def _compute_pca_layer_points(
     activation_states: Mapping[str, Mapping[str, Sequence[torch.Tensor]]],
     layers: Sequence[int],
-    path: Path,
     *,
-    defense1_split: str,
-    defense2_split: str,
     max_points_per_group: int = 250,
     seed: int = 0,
-) -> None:
-    model_order = ["base", "defense1", "defense2"]
-    split_order = ["malicious", "privacy"]
-    split_readable = {"malicious": "Safety", "privacy": "Privacy"}
-    model_styles = {
-        "base": {"color": "#9467bd", "marker": "o"},
-        "defense1": {"color": "#d62728", "marker": "s"},
-        "defense2": {"color": "#2ca02c", "marker": "^"},
-    }
-
+) -> Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]]:
+    """Compute per-layer PCA projections. Returns layer -> (projected (N,2), meta list of (model,split))."""
     generator = torch.Generator().manual_seed(seed)
-
-    valid_layers: List[int] = []
-    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str, str]]]] = {}
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]] = {}
     for layer in layers:
         vectors: List[torch.Tensor] = []
-        meta: List[Tuple[str, str, str]] = []
-        for model in model_order:
-            for split in split_order:
+        meta: List[Tuple[str, str]] = []
+        for model in MODEL_ORDER:
+            for split in SPLIT_ORDER:
                 split_states = activation_states.get(model, {}).get(split)
                 if split_states is None or layer >= len(split_states):
                     continue
@@ -293,8 +289,74 @@ def _save_activation_projection_plot(
         stacked = torch.cat(vectors, dim=0)
         projected = _pca_project(stacked, 2)
         layer_points[layer] = (projected, meta)
-        valid_layers.append(layer)
+    return layer_points
 
+
+def _save_pca_data(
+    results_dir: Path,
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]],
+    defense1_split: str,
+    defense2_split: str,
+) -> None:
+    """Save PCA projections and config to results_dir for later plotting."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    config_path = results_dir / "activation_shift_projection_pca_config.json"
+    config = {"defense1_split": defense1_split, "defense2_split": defense2_split}
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    layers = sorted(layer_points.keys())
+    model_to_idx = {m: i for i, m in enumerate(MODEL_ORDER)}
+    split_to_idx = {s: i for i, s in enumerate(SPLIT_ORDER)}
+    save_dict: Dict[str, np.ndarray] = {"layers": np.array(layers, dtype=np.int64)}
+    for layer in layers:
+        projected, meta = layer_points[layer]
+        save_dict[f"proj_{layer}"] = np.asarray(projected, dtype=np.float32)
+        model_idx = np.array([model_to_idx[m] for m, _ in meta], dtype=np.uint8)
+        split_idx = np.array([split_to_idx[s] for _, s in meta], dtype=np.uint8)
+        save_dict[f"model_{layer}"] = model_idx
+        save_dict[f"split_{layer}"] = split_idx
+    npz_path = results_dir / "activation_shift_projection_pca.npz"
+    np.savez_compressed(npz_path, **save_dict)
+
+
+def _load_pca_data(results_dir: Path) -> Tuple[Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]], str, str]:
+    """Load PCA data from results_dir. Returns (layer_points, defense1_split, defense2_split)."""
+    config_path = results_dir / "activation_shift_projection_pca_config.json"
+    with config_path.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+    defense1_split = config["defense1_split"]
+    defense2_split = config["defense2_split"]
+
+    npz_path = results_dir / "activation_shift_projection_pca.npz"
+    data = np.load(npz_path)
+    layers = data["layers"].tolist()
+    idx_to_model = {i: m for i, m in enumerate(MODEL_ORDER)}
+    idx_to_split = {i: s for i, s in enumerate(SPLIT_ORDER)}
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]] = {}
+    for layer in layers:
+        proj = data[f"proj_{layer}"]
+        model_idx = data[f"model_{layer}"]
+        split_idx = data[f"split_{layer}"]
+        meta = [(idx_to_model[int(m)], idx_to_split[int(s)]) for m, s in zip(model_idx, split_idx)]
+        layer_points[int(layer)] = (proj, meta)
+    return layer_points, defense1_split, defense2_split
+
+
+def _draw_projection_plot(
+    layer_points: Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]],
+    path: Path,
+    defense1_split: str,
+    defense2_split: str,
+) -> None:
+    """Draw PCA projection plot from precomputed layer_points."""
+    split_readable = {"malicious": "Safety", "privacy": "Privacy"}
+    model_styles = {
+        "base": {"color": "#9467bd", "marker": "o"},
+        "defense1": {"color": "#d62728", "marker": "s"},
+        "defense2": {"color": "#2ca02c", "marker": "^"},
+    }
+    valid_layers = sorted(layer_points.keys())
     if not valid_layers:
         return
 
@@ -393,8 +455,46 @@ def _save_activation_projection_plot(
     plt.close(fig)
 
 
+def _save_activation_projection_plot(
+    activation_states: Mapping[str, Mapping[str, Sequence[torch.Tensor]]],
+    layers: Sequence[int],
+    path: Path,
+    *,
+    defense1_split: str,
+    defense2_split: str,
+    max_points_per_group: int = 250,
+    seed: int = 0,
+) -> Dict[int, Tuple[np.ndarray, List[Tuple[str, str]]]]:
+    """Compute PCA, draw plot, and return layer_points for optional saving."""
+    layer_points = _compute_pca_layer_points(
+        activation_states,
+        layers,
+        max_points_per_group=max_points_per_group,
+        seed=seed,
+    )
+    _draw_projection_plot(layer_points, path, defense1_split, defense2_split)
+    return layer_points
+
+
 def main() -> None:  # pragma: no cover - CLI entrypoint
     args = parse_args()
+
+    if args.plot_only:
+        run_name = args.run_name
+        if not run_name:
+            raise ValueError("--plot-only requires --run-name (e.g. base__defense1__defense2)")
+        results_dir = args.output_dir / run_name
+        npz_path = results_dir / "activation_shift_projection_pca.npz"
+        if not npz_path.exists():
+            raise FileNotFoundError(
+                f"PCA cache not found at {npz_path}. Run the full experiment first (without --plot-only) to generate it."
+            )
+        layer_points, d1, d2 = _load_pca_data(results_dir)
+        projection_path = results_dir / "activation_shift_projection.png"
+        _draw_projection_plot(layer_points, projection_path, d1, d2)
+        print(f"Plot saved to {projection_path}")
+        return
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device(args.device)
@@ -544,7 +644,7 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
     _save_heatmap(cosine_matrix, labels, heatmap_path)
 
     projection_path = results_dir / "activation_shift_projection.png"
-    _save_activation_projection_plot(
+    layer_points = _save_activation_projection_plot(
         activation_states,
         selected_layers,
         projection_path,
@@ -552,6 +652,8 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
         defense2_split=args.defense2_split,
         seed=args.seed,
     )
+    if layer_points:
+        _save_pca_data(results_dir, layer_points, args.defense1_split, args.defense2_split)
 
     summary_lines = [
         "Sequential defense alignment:",
@@ -571,6 +673,10 @@ def main() -> None:  # pragma: no cover - CLI entrypoint
 
     print("\n".join(summary_lines))
     print(f"Results stored under {results_dir}")
+    if layer_points:
+        print(
+            f"PCA data cached. Redraw projection plot with: --plot-only --output-dir {args.output_dir} --run-name \"{run_name}\""
+        )
 
 
 if __name__ == "__main__":

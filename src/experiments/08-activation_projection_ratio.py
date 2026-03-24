@@ -21,7 +21,7 @@ from models.activations import ActivationBatch, forward_dataset, _select_final_t
 
 
 DEFAULT_LAYER_STRING = "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
-DEFAULT_OUTPUT_ROOT = Path("analysis_results/08-activation_projection_ratio")
+DEFAULT_OUTPUT_ROOT = Path("/data/xiangtao/projects/crossdefense/code/analysis_results/08-activation_projection_ratio")
 
 
 def _normalize_layer_identifier(raw: str) -> str:
@@ -171,13 +171,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--privacy", default="/data/xiangtao/projects/crossdefense/code/defense/privacy/open-unlearning/saves/unlearn/Llama-3.2-1B-Instruct-tofu/Llama-3.2-1B-Instruct-tofu-NPO", help="Privacy fine-tuned model")
     parser.add_argument("--normal", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/normal.jsonl", help="Path to D_norm JSONL")
     parser.add_argument("--malicious", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/safety.jsonl", help="Path to D_mal JSONL")
-    parser.add_argument("--privacy-data", required=True, dest="privacy_data", help="Path to D_priv JSONL")
+    parser.add_argument("--privacy-data", default="/data/xiangtao/projects/crossdefense/code/analysis/datasets/risk_data/privacy.jsonl", dest="privacy_data", help="Path to D_priv JSONL")
     parser.add_argument("--layer", dest="layer", action="append", default=DEFAULT_LAYER_STRING, help="Target layer(s) for activation capture")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-batches", type=int, default=None, help="Optional limit on dataloader batches")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_ROOT, help="Root directory for analysis outputs")
-    parser.add_argument("--run-name", type=str, default="default", help="Run identifier used to create a subdirectory")
+    parser.add_argument("--run-name", type=str, default="Llama-3.2-1B-Instruct-tofu", help="Run identifier used to create a subdirectory")
     parser.add_argument("--small-ratio-threshold", type=float, default=0.1, help="Threshold for marking conflicting directions")
     parser.add_argument("--no-plot", action="store_true", help="Disable plot generation")
     return parser.parse_args()

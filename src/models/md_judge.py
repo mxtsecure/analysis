@@ -6,6 +6,11 @@ import re
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
+# 设置 HuggingFace 镜像以解决 SSL 连接问题
+# 如果环境变量未设置，使用镜像站点
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 from transformers import AutoTokenizer
 
 try:  # pragma: no cover - optional dependency

@@ -29,6 +29,8 @@ class CosineCurves:
     std_nr: List[float]
     angle_nn: List[float]
     angle_nr: List[float]
+    angle_std_nn: List[float]
+    angle_std_nr: List[float]
     delta_phi: List[float]
     critical_intervals: List[CosineCriticalInterval]
 
@@ -71,6 +73,8 @@ class KeyLayerAnalysisResult:
                 "std_nr": self.cosine.std_nr,
                 "angle_nn": self.cosine.angle_nn,
                 "angle_nr": self.cosine.angle_nr,
+                "angle_std_nn": self.cosine.angle_std_nn,
+                "angle_std_nr": self.cosine.angle_std_nr,
                 "delta_phi": self.cosine.delta_phi,
                 "critical_intervals": [
                     {"start": interval.start, "peak": interval.peak, "end": interval.end}
@@ -91,6 +95,48 @@ class KeyLayerAnalysisResult:
                 ],
             },
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> KeyLayerAnalysisResult:
+        """Reconstruct result from a JSON-serialised dictionary (e.g. from result_model_*.json)."""
+        c = data["cosine"]
+        intervals_raw = c.get("critical_intervals", [])
+        # 兼容旧版本：angle_std_* 可能不存在
+        angle_std_nn = c.get("angle_std_nn")
+        angle_std_nr = c.get("angle_std_nr")
+        if angle_std_nn is None:
+            angle_std_nn = [0.0 for _ in c["angle_nn"]]
+        if angle_std_nr is None:
+            angle_std_nr = [0.0 for _ in c["angle_nr"]]
+        cosine = CosineCurves(
+            mu_nn=c["mu_nn"],
+            mu_nr=c["mu_nr"],
+            std_nn=c["std_nn"],
+            std_nr=c["std_nr"],
+            angle_nn=c["angle_nn"],
+            angle_nr=c["angle_nr"],
+            angle_std_nn=angle_std_nn,
+            angle_std_nr=angle_std_nr,
+            delta_phi=c["delta_phi"],
+            critical_intervals=[
+                CosineCriticalInterval(start=i["start"], peak=i["peak"], end=i["end"])
+                for i in intervals_raw
+            ],
+        )
+        p = data["parameters"]
+        parameters = ParameterCurves(
+            s_attn=p["s_attn"],
+            s_mlp=p["s_mlp"],
+            s_total=p["s_total"],
+            s_zscore=p["s_zscore"],
+        )
+        i = data["intervals"]
+        intervals = KeyLayerIntervals(
+            representational=[tuple(t) for t in i["representational"]],
+            parameter_layers=list(i["parameter_layers"]),
+            parameter_spans=[tuple(t) for t in i["parameter_spans"]],
+        )
+        return cls(cosine=cosine, parameters=parameters, intervals=intervals)
 
 
 def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
@@ -179,6 +225,8 @@ def compute_cosine_curves(
     std_nr = []
     angle_nn = []
     angle_nr = []
+    angle_std_nn = []
+    angle_std_nr = []
 
     cos_delta = []
 
@@ -201,11 +249,15 @@ def compute_cosine_curves(
 
         clamped_nn = torch.clamp(cos_nn, -1.0, 1.0)
         clamped_nr = torch.clamp(cos_nr, -1.0, 1.0)
-        ang_nn = torch.rad2deg(torch.acos(clamped_nn)).mean().item()
-        ang_nr = torch.rad2deg(torch.acos(clamped_nr)).mean().item()
-        angle_nn.append(ang_nn)
-        angle_nr.append(ang_nr)
-        cos_delta.append(ang_nr - ang_nn)
+        ang_nn_vals = torch.rad2deg(torch.acos(clamped_nn))
+        ang_nr_vals = torch.rad2deg(torch.acos(clamped_nr))
+        ang_nn_mean = ang_nn_vals.mean().item()
+        ang_nr_mean = ang_nr_vals.mean().item()
+        angle_nn.append(ang_nn_mean)
+        angle_nr.append(ang_nr_mean)
+        angle_std_nn.append(ang_nn_vals.std(unbiased=False).item())
+        angle_std_nr.append(ang_nr_vals.std(unbiased=False).item())
+        cos_delta.append(ang_nr_mean - ang_nn_mean)
 
     smooth_delta = np.array(cos_delta)
     positive_slope = np.diff(smooth_delta) > 0.0
@@ -237,6 +289,8 @@ def compute_cosine_curves(
         std_nr=std_nr,
         angle_nn=angle_nn,
         angle_nr=angle_nr,
+        angle_std_nn=angle_std_nn,
+        angle_std_nr=angle_std_nr,
         delta_phi=cos_delta,
         critical_intervals=critical_intervals,
     )
@@ -303,6 +357,65 @@ def compute_parameter_curves(
         ParameterCurves(s_attn=s_attn, s_mlp=s_mlp, s_total=s_total, s_zscore=s_z),
         significant_layers,
     )
+
+def _critical_intervals_from_delta_phi(delta_phi: Sequence[float]) -> List[CosineCriticalInterval]:
+    """从每层的角差序列中找出上升段，得到关键区间（与 compute_cosine_curves 中逻辑一致）。"""
+    if not delta_phi:
+        return []
+    smooth_delta = np.array(delta_phi)
+    positive_slope = np.diff(smooth_delta) > 0.0
+    critical_intervals: List[CosineCriticalInterval] = []
+    idx = 0
+    while idx < len(positive_slope):
+        if not positive_slope[idx]:
+            idx += 1
+            continue
+        seg_start = idx
+        while idx < len(positive_slope) and positive_slope[idx]:
+            idx += 1
+        seg_end = idx
+        interval_start = seg_start
+        interval_end = seg_end
+        segment = smooth_delta[interval_start : interval_end + 1]
+        peak_offset = int(np.argmax(segment))
+        peak_idx = interval_start + peak_offset
+        critical_intervals.append(
+            CosineCriticalInterval(
+                start=int(interval_start), peak=int(peak_idx), end=int(interval_end)
+            )
+        )
+    return critical_intervals
+
+
+def compute_baseline_adjusted_cosine(
+    defense_cosine: CosineCurves,
+    baseline_cosine: CosineCurves,
+) -> CosineCurves:
+    """用「防御 - 基线」的角差得到基线调整后的余弦曲线，关键区间基于增量角差。
+
+    这样得到的关键层反映的是防御在基座之上新增的分离（而非基座已有的过增强差异）。
+    """
+    if len(defense_cosine.delta_phi) != len(baseline_cosine.delta_phi):
+        raise ValueError(
+            "defense_cosine and baseline_cosine must have same number of layers"
+        )
+    delta_phi_adjusted = [
+        d - b for d, b in zip(defense_cosine.delta_phi, baseline_cosine.delta_phi)
+    ]
+    critical_intervals = _critical_intervals_from_delta_phi(delta_phi_adjusted)
+    return CosineCurves(
+        mu_nn=defense_cosine.mu_nn,
+        mu_nr=defense_cosine.mu_nr,
+        std_nn=defense_cosine.std_nn,
+        std_nr=defense_cosine.std_nr,
+        angle_nn=defense_cosine.angle_nn,
+        angle_nr=defense_cosine.angle_nr,
+        angle_std_nn=defense_cosine.angle_std_nn,
+        angle_std_nr=defense_cosine.angle_std_nr,
+        delta_phi=delta_phi_adjusted,
+        critical_intervals=critical_intervals,
+    )
+
 
 def _merge_intervals(intervals: Sequence[CosineCriticalInterval]) -> List[Tuple[int, int]]:
     """Merges a list of CosineCriticalIntervals into a minimal list of non-overlapping spans (start, end)."""
