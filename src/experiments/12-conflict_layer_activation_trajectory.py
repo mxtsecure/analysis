@@ -202,7 +202,7 @@ def _save_plot(points: Dict[str, np.ndarray], path: Path) -> None:
         linewidth=2.2,
         marker="o",
         markersize=5.5,
-        label="Mean trajectory",
+        label="Activation shift trajectory",
         zorder=6,
     )
 
@@ -228,28 +228,9 @@ def _save_plot(points: Dict[str, np.ndarray], path: Path) -> None:
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, linewidth=0),
         )
 
-    centroid_gap_01 = float(np.linalg.norm(mean_traj[1] - mean_traj[0]))
-    centroid_gap_12 = float(np.linalg.norm(mean_traj[2] - mean_traj[1]))
-    centroid_gap_02 = float(np.linalg.norm(mean_traj[2] - mean_traj[0]))
-
     ax.set_title("Conflict-layer activation trajectory (PCA)", fontsize=12)
     ax.set_xlabel("Projection dimension 1", fontsize=10)
     ax.set_ylabel("Projection dimension 2", fontsize=10)
-    ax.text(
-        0.02,
-        0.98,
-        (
-            f"Centroid shifts\n"
-            f"Base→D1: {centroid_gap_01:.3f}\n"
-            f"D1→D2: {centroid_gap_12:.3f}\n"
-            f"Base→D2: {centroid_gap_02:.3f}"
-        ),
-        transform=ax.transAxes,
-        fontsize=8,
-        va="top",
-        ha="left",
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8, linewidth=0.3),
-    )
     ax.legend(loc="best")
     ax.grid(alpha=0.25, linestyle="--")
     fig.tight_layout()
