@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -127,18 +128,67 @@ def _trajectory_metrics(base: torch.Tensor, d1: torch.Tensor, d2: torch.Tensor) 
     }
 
 
+def _covariance_ellipse(points: np.ndarray, n_std: float = 1.8) -> tuple[np.ndarray, float, float, float] | None:
+    if points.ndim != 2 or points.shape[0] < 3:
+        return None
+    cov = np.cov(points, rowvar=False)
+    if cov.shape != (2, 2) or not np.all(np.isfinite(cov)):
+        return None
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+    if np.any(eigvals <= 0):
+        return None
+    width, height = 2.0 * n_std * np.sqrt(eigvals)
+    angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+    center = points.mean(axis=0)
+    return center, float(width), float(height), float(angle)
+
+
 def _save_plot(points: Dict[str, np.ndarray], path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(6.8, 5.6))
-    colors = {"base": "#1f77b4", "defense1": "#ff7f0e", "defense2": "#2ca02c"}
+    fig, ax = plt.subplots(figsize=(7.2, 5.8))
+    model_styles = {
+        "base": {"color": "#9467bd", "marker": "o", "label": "Base"},
+        "defense1": {"color": "#d62728", "marker": "s", "label": "Defense1"},
+        "defense2": {"color": "#2ca02c", "marker": "^", "label": "Defense2"},
+    }
 
     for name, coords in points.items():
-        ax.scatter(coords[:, 0], coords[:, 1], s=18, alpha=0.55, label=name, color=colors[name])
+        style = model_styles[name]
+        ax.scatter(
+            coords[:, 0],
+            coords[:, 1],
+            s=18,
+            alpha=0.5,
+            label=style["label"],
+            color=style["color"],
+            marker=style["marker"],
+            edgecolor="white",
+            linewidths=0.35,
+        )
+        ellipse = _covariance_ellipse(coords)
+        if ellipse is not None:
+            center, width, height, angle = ellipse
+            ax.add_patch(
+                Ellipse(
+                    xy=center,
+                    width=width,
+                    height=height,
+                    angle=angle,
+                    facecolor=style["color"],
+                    edgecolor=style["color"],
+                    alpha=0.09,
+                    linewidth=1.0,
+                    zorder=1,
+                )
+            )
 
     n = points["base"].shape[0]
     for i in range(n):
         x = [points["base"][i, 0], points["defense1"][i, 0], points["defense2"][i, 0]]
         y = [points["base"][i, 1], points["defense1"][i, 1], points["defense2"][i, 1]]
-        ax.plot(x, y, color="gray", alpha=0.12, linewidth=0.8)
+        ax.plot(x, y, color="#7f7f7f", alpha=0.08, linewidth=0.75, zorder=0)
 
     mean_traj = np.stack([
         points["base"].mean(axis=0),
@@ -148,18 +198,60 @@ def _save_plot(points: Dict[str, np.ndarray], path: Path) -> None:
     ax.plot(
         mean_traj[:, 0],
         mean_traj[:, 1],
-        color="black",
-        linewidth=2.4,
+        color="#111111",
+        linewidth=2.2,
         marker="o",
-        markersize=6,
-        label="mean trajectory",
+        markersize=5.5,
+        label="Mean trajectory",
+        zorder=6,
     )
 
-    ax.set_title("Conflict-layer activation trajectory (same input set)")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
+    transitions = [(0, 1, "Base → Defense1"), (1, 2, "Defense1 → Defense2")]
+    for start, end, label in transitions:
+        start_point = mean_traj[start]
+        end_point = mean_traj[end]
+        ax.annotate(
+            "",
+            xy=end_point,
+            xytext=start_point,
+            arrowprops=dict(arrowstyle="->", color="#333333", linewidth=1.5),
+        )
+        midpoint = start_point * 0.35 + end_point * 0.65
+        ax.text(
+            midpoint[0],
+            midpoint[1],
+            label,
+            fontsize=8,
+            color="#222222",
+            ha="center",
+            va="center",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, linewidth=0),
+        )
+
+    centroid_gap_01 = float(np.linalg.norm(mean_traj[1] - mean_traj[0]))
+    centroid_gap_12 = float(np.linalg.norm(mean_traj[2] - mean_traj[1]))
+    centroid_gap_02 = float(np.linalg.norm(mean_traj[2] - mean_traj[0]))
+
+    ax.set_title("Conflict-layer activation trajectory (PCA)", fontsize=12)
+    ax.set_xlabel("Projection dimension 1", fontsize=10)
+    ax.set_ylabel("Projection dimension 2", fontsize=10)
+    ax.text(
+        0.02,
+        0.98,
+        (
+            f"Centroid shifts\n"
+            f"Base→D1: {centroid_gap_01:.3f}\n"
+            f"D1→D2: {centroid_gap_12:.3f}\n"
+            f"Base→D2: {centroid_gap_02:.3f}"
+        ),
+        transform=ax.transAxes,
+        fontsize=8,
+        va="top",
+        ha="left",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8, linewidth=0.3),
+    )
     ax.legend(loc="best")
-    ax.grid(alpha=0.2, linestyle="--")
+    ax.grid(alpha=0.25, linestyle="--")
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=220)
