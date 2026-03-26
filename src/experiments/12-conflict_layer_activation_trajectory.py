@@ -17,7 +17,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.datasets import RequestDataset
+from data.datasets import load_dataset
 
 
 MODEL_ORDER = ["base", "defense1", "defense2"]
@@ -259,8 +259,8 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    safety_dataset: Dataset = RequestDataset(args.safety_data, tokenizer, max_words=args.max_length)
-    normal_dataset: Dataset = RequestDataset(args.normal_data, tokenizer, max_words=args.max_length)
+    safety_dataset: Dataset = load_dataset(args.safety_data, tokenizer=tokenizer, max_length=args.max_length)
+    normal_dataset: Dataset = load_dataset(args.normal_data, tokenizer=tokenizer, max_length=args.max_length)
     safety_dataset = _limit_dataset(safety_dataset, args.max_safety)
     normal_dataset = _limit_dataset(normal_dataset, args.max_normal)
 
