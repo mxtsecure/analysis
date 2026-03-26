@@ -1,35 +1,50 @@
-"""Track activation trajectories on a conflict layer across sequential defenses."""
+"""Track conflict-layer activation trajectories with safety and normal references."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Mapping, Tuple
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
 
-from data.datasets import load_dataset
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.datasets import RequestDataset
+
+
+MODEL_ORDER = ["base", "defense1", "defense2"]
+SPLIT_ORDER = ["safety", "normal"]
+MODEL_LABEL = {
+    "base": "Base",
+    "defense1": "Defense1",
+    "defense2": "Defense2",
+}
+SPLIT_LABEL = {
+    "safety": "Safety prompts",
+    "normal": "Normal prompts",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="Path to base LLM checkpoint")
+    parser.add_argument("--base", required=True, help="Path to base checkpoint")
     parser.add_argument("--defense1", required=True, help="Path to base+defense1 checkpoint")
     parser.add_argument("--defense2", required=True, help="Path to base+defense1+defense2 checkpoint")
-    parser.add_argument("--input-data", type=Path, required=True, help="JSONL input set used by all models")
-    parser.add_argument("--layer", type=int, required=True, help="Conflict layer index to analyze")
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--safety-data", type=Path, required=True, help="JSONL containing safety/malicious prompts")
+    parser.add_argument("--normal-data", type=Path, required=True, help="JSONL containing normal benign prompts")
+    parser.add_argument("--layer", type=int, required=True, help="Layer index to analyze")
     parser.add_argument("--max-length", type=int, default=512)
-    parser.add_argument("--max-samples", type=int, default=0, help="Optional cap on sample count (0 = all)")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--max-safety", type=int, default=0, help="Optional cap for safety prompts (0 = all)")
+    parser.add_argument("--max-normal", type=int, default=0, help="Optional cap for normal prompts (0 = all)")
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float16")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for JSON metrics and plots")
@@ -45,7 +60,15 @@ def _resolve_dtype(label: str) -> torch.dtype:
     }[label]
 
 
-def _prepare_batch(batch: Dict[str, object], device: torch.device) -> Dict[str, torch.Tensor]:
+def _limit_dataset(dataset: Dataset, max_samples: int) -> Dataset:
+    if max_samples <= 0:
+        return dataset
+    if max_samples >= len(dataset):
+        return dataset
+    return Subset(dataset, list(range(max_samples)))
+
+
+def _prepare_batch(batch: Mapping[str, object], device: torch.device) -> Dict[str, torch.Tensor]:
     tensor_batch: Dict[str, torch.Tensor] = {}
     for key, value in batch.items():
         if isinstance(value, torch.Tensor):
@@ -53,7 +76,7 @@ def _prepare_batch(batch: Dict[str, object], device: torch.device) -> Dict[str, 
     return tensor_batch
 
 
-def _collect_layer_last_token(
+def _collect_last_token_activations(
     model: torch.nn.Module,
     dataloader: DataLoader,
     *,
@@ -68,23 +91,19 @@ def _collect_layer_last_token(
             attention_mask = tensor_batch["attention_mask"].long()
             outputs = model(**tensor_batch, output_hidden_states=True, use_cache=False)
             hidden_states = outputs.hidden_states
-            # hidden_states[0] is embeddings, hidden_states[1:] are transformer layers.
             target = hidden_states[layer_idx + 1]
 
-            lengths = attention_mask.sum(dim=1) - 1
-            lengths = torch.clamp(lengths, min=0)
+            last_positions = torch.clamp(attention_mask.sum(dim=1) - 1, min=0)
             row_idx = torch.arange(target.shape[0], device=device)
-            vectors = target[row_idx, lengths, :]
+            vectors = target[row_idx, last_positions, :]
             chunks.append(vectors.detach().cpu())
 
     if not chunks:
-        raise ValueError("No activation vectors were collected. Check dataset and dataloader settings.")
+        raise ValueError("No activation vectors collected. Please check dataset and tokenizer settings.")
     return torch.cat(chunks, dim=0)
 
 
 def _pca_2d(features: np.ndarray) -> np.ndarray:
-    if features.ndim != 2:
-        raise ValueError("features must be 2D")
     centered = features - features.mean(axis=0, keepdims=True)
     if np.allclose(centered, 0):
         return np.zeros((features.shape[0], 2), dtype=np.float32)
@@ -96,143 +115,131 @@ def _pca_2d(features: np.ndarray) -> np.ndarray:
     return projected.astype(np.float32)
 
 
-def _trajectory_metrics(base: torch.Tensor, d1: torch.Tensor, d2: torch.Tensor) -> Dict[str, object]:
-    delta_01 = d1 - base
-    delta_12 = d2 - d1
-    delta_02 = d2 - base
+def _mean_vectors(acts: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, torch.Tensor]]:
+    means: Dict[str, Dict[str, torch.Tensor]] = {}
+    for model_name, split_dict in acts.items():
+        means[model_name] = {}
+        for split_name, tensor in split_dict.items():
+            means[model_name][split_name] = tensor.float().mean(dim=0)
+    return means
 
-    step_01 = torch.norm(delta_01, dim=1)
-    step_12 = torch.norm(delta_12, dim=1)
-    total = step_01 + step_12
-    direct = torch.norm(delta_02, dim=1)
-    curvature = total - direct
+
+def _compute_direction_metrics(means: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, object]:
+    safety_direction = means["base"]["normal"] - means["base"]["safety"]
+
+    defense1_shift = means["defense1"]["safety"] - means["base"]["safety"]
+    defense2_shift = means["defense2"]["safety"] - means["defense1"]["safety"]
+    full_shift = means["defense2"]["safety"] - means["base"]["safety"]
+
+    def _safe_cosine(a: torch.Tensor, b: torch.Tensor) -> float:
+        if torch.norm(a).item() == 0.0 or torch.norm(b).item() == 0.0:
+            return float("nan")
+        return float(F.cosine_similarity(a, b, dim=0).item())
 
     return {
-        "num_samples": int(base.shape[0]),
-        "mean_step_base_to_defense1": float(step_01.mean().item()),
-        "mean_step_defense1_to_defense2": float(step_12.mean().item()),
-        "mean_direct_base_to_defense2": float(direct.mean().item()),
-        "mean_path_length": float(total.mean().item()),
-        "mean_curvature": float(curvature.mean().item()),
-        "sample_metrics": [
-            {
-                "sample_index": i,
-                "step_base_to_defense1": float(step_01[i].item()),
-                "step_defense1_to_defense2": float(step_12[i].item()),
-                "direct_base_to_defense2": float(direct[i].item()),
-                "path_length": float(total[i].item()),
-                "curvature": float(curvature[i].item()),
-            }
-            for i in range(base.shape[0])
-        ],
+        "reference": "base_normal_minus_base_safety",
+        "reference_norm": float(torch.norm(safety_direction).item()),
+        "cosine_alignment": {
+            "base_to_defense1_on_safety": _safe_cosine(defense1_shift, safety_direction),
+            "defense1_to_defense2_on_safety": _safe_cosine(defense2_shift, safety_direction),
+            "base_to_defense2_on_safety": _safe_cosine(full_shift, safety_direction),
+        },
+        "shift_norms": {
+            "base_to_defense1_on_safety": float(torch.norm(defense1_shift).item()),
+            "defense1_to_defense2_on_safety": float(torch.norm(defense2_shift).item()),
+            "base_to_defense2_on_safety": float(torch.norm(full_shift).item()),
+        },
     }
 
 
-def _covariance_ellipse(points: np.ndarray, n_std: float = 1.8) -> tuple[np.ndarray, float, float, float] | None:
-    if points.ndim != 2 or points.shape[0] < 3:
-        return None
-    cov = np.cov(points, rowvar=False)
-    if cov.shape != (2, 2) or not np.all(np.isfinite(cov)):
-        return None
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    order = np.argsort(eigvals)[::-1]
-    eigvals = eigvals[order]
-    eigvecs = eigvecs[:, order]
-    if np.any(eigvals <= 0):
-        return None
-    width, height = 2.0 * n_std * np.sqrt(eigvals)
-    angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-    center = points.mean(axis=0)
-    return center, float(width), float(height), float(angle)
+def _build_pca_points(acts: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, np.ndarray]]:
+    stacked: List[np.ndarray] = []
+    keys: List[Tuple[str, str, int]] = []
+    for model_name in MODEL_ORDER:
+        for split_name in SPLIT_ORDER:
+            arr = acts[model_name][split_name].numpy()
+            stacked.append(arr)
+            keys.append((model_name, split_name, arr.shape[0]))
+
+    projected = _pca_2d(np.concatenate(stacked, axis=0))
+
+    out: Dict[str, Dict[str, np.ndarray]] = {m: {} for m in MODEL_ORDER}
+    cursor = 0
+    for model_name, split_name, n in keys:
+        out[model_name][split_name] = projected[cursor : cursor + n]
+        cursor += n
+    return out
 
 
-def _save_plot(points: Dict[str, np.ndarray], path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(7.2, 5.8))
-    model_styles = {
-        "base": {"color": "#9467bd", "marker": "o", "label": "Base"},
-        "defense1": {"color": "#d62728", "marker": "s", "label": "Defense1"},
-        "defense2": {"color": "#2ca02c", "marker": "^", "label": "Defense2"},
+def _save_plot(points: Dict[str, Dict[str, np.ndarray]], path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8.2, 6.2))
+
+    split_styles = {
+        "safety": {"color": "#d62728", "marker": "o"},
+        "normal": {"color": "#1f77b4", "marker": "^"},
     }
 
-    for name, coords in points.items():
-        style = model_styles[name]
-        ax.scatter(
-            coords[:, 0],
-            coords[:, 1],
-            s=18,
-            alpha=0.5,
-            label=style["label"],
-            color=style["color"],
-            marker=style["marker"],
-            edgecolor="white",
-            linewidths=0.35,
-        )
-        ellipse = _covariance_ellipse(coords)
-        if ellipse is not None:
-            center, width, height, angle = ellipse
-            ax.add_patch(
-                Ellipse(
-                    xy=center,
-                    width=width,
-                    height=height,
-                    angle=angle,
-                    facecolor=style["color"],
-                    edgecolor=style["color"],
-                    alpha=0.09,
-                    linewidth=1.0,
-                    zorder=1,
-                )
+    for split_name in SPLIT_ORDER:
+        style = split_styles[split_name]
+        for model_name in MODEL_ORDER:
+            coords = points[model_name][split_name]
+            ax.scatter(
+                coords[:, 0],
+                coords[:, 1],
+                s=16,
+                alpha=0.28,
+                color=style["color"],
+                marker=style["marker"],
+                edgecolor="white",
+                linewidths=0.2,
             )
 
-    n = points["base"].shape[0]
-    for i in range(n):
-        x = [points["base"][i, 0], points["defense1"][i, 0], points["defense2"][i, 0]]
-        y = [points["base"][i, 1], points["defense1"][i, 1], points["defense2"][i, 1]]
-        ax.plot(x, y, color="#7f7f7f", alpha=0.08, linewidth=0.75, zorder=0)
-
-    mean_traj = np.stack([
-        points["base"].mean(axis=0),
-        points["defense1"].mean(axis=0),
-        points["defense2"].mean(axis=0),
-    ])
-    ax.plot(
-        mean_traj[:, 0],
-        mean_traj[:, 1],
-        color="#111111",
-        linewidth=2.2,
-        marker="o",
-        markersize=5.5,
-        label="Activation shift trajectory",
-        zorder=6,
-    )
-
-    transitions = [(0, 1, "Base → Defense1"), (1, 2, "Defense1 → Defense2")]
-    for start, end, label in transitions:
-        start_point = mean_traj[start]
-        end_point = mean_traj[end]
-        ax.annotate(
-            "",
-            xy=end_point,
-            xytext=start_point,
-            arrowprops=dict(arrowstyle="->", color="#333333", linewidth=1.5),
+        mean_traj = np.stack([points[m][split_name].mean(axis=0) for m in MODEL_ORDER], axis=0)
+        ax.plot(
+            mean_traj[:, 0],
+            mean_traj[:, 1],
+            color=style["color"],
+            linewidth=2.0,
+            marker=style["marker"],
+            markersize=6,
+            label=f"{SPLIT_LABEL[split_name]} mean trajectory",
+            zorder=5,
         )
-        midpoint = start_point * 0.35 + end_point * 0.65
+
+        for i in range(2):
+            ax.annotate(
+                "",
+                xy=mean_traj[i + 1],
+                xytext=mean_traj[i],
+                arrowprops=dict(arrowstyle="->", color=style["color"], linewidth=1.4),
+            )
+
+    for model_name in MODEL_ORDER:
+        safety_mean = points[model_name]["safety"].mean(axis=0)
+        normal_mean = points[model_name]["normal"].mean(axis=0)
+        ax.plot(
+            [safety_mean[0], normal_mean[0]],
+            [safety_mean[1], normal_mean[1]],
+            linestyle="--",
+            color="#555555",
+            alpha=0.6,
+            linewidth=1.0,
+        )
         ax.text(
-            midpoint[0],
-            midpoint[1],
-            label,
+            normal_mean[0],
+            normal_mean[1],
+            MODEL_LABEL[model_name],
             fontsize=8,
-            color="#222222",
-            ha="center",
-            va="center",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7, linewidth=0),
+            color="#2f2f2f",
+            ha="left",
+            va="bottom",
         )
 
-    ax.set_title("Conflict-layer activation trajectory (PCA)", fontsize=12)
-    ax.set_xlabel("Projection dimension 1", fontsize=10)
-    ax.set_ylabel("Projection dimension 2", fontsize=10)
-    ax.legend(loc="best")
+    ax.set_title("Conflict-layer activation trajectories with normal reference", fontsize=12)
+    ax.set_xlabel("PCA dimension 1", fontsize=10)
+    ax.set_ylabel("PCA dimension 2", fontsize=10)
     ax.grid(alpha=0.25, linestyle="--")
+    ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=220)
@@ -252,10 +259,15 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    dataset = load_dataset(args.input_data, tokenizer=tokenizer, max_length=args.max_length)
-    if args.max_samples and args.max_samples > 0 and args.max_samples < len(dataset):
-        dataset = Subset(dataset, list(range(args.max_samples)))
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
+    safety_dataset: Dataset = RequestDataset(args.safety_data, tokenizer, max_words=args.max_length)
+    normal_dataset: Dataset = RequestDataset(args.normal_data, tokenizer, max_words=args.max_length)
+    safety_dataset = _limit_dataset(safety_dataset, args.max_safety)
+    normal_dataset = _limit_dataset(normal_dataset, args.max_normal)
+
+    dataloaders: Dict[str, DataLoader] = {
+        "safety": DataLoader(safety_dataset, batch_size=args.batch_size, shuffle=False),
+        "normal": DataLoader(normal_dataset, batch_size=args.batch_size, shuffle=False),
+    }
 
     models = {
         "base": AutoModelForCausalLM.from_pretrained(args.base, torch_dtype=dtype).to(device),
@@ -263,50 +275,67 @@ def main() -> None:
         "defense2": AutoModelForCausalLM.from_pretrained(args.defense2, torch_dtype=dtype).to(device),
     }
 
-    layer_acts: Dict[str, torch.Tensor] = {}
-    for name, model in models.items():
-        layer_acts[name] = _collect_layer_last_token(model, dataloader, layer_idx=args.layer, device=device)
+    activations: Dict[str, Dict[str, torch.Tensor]] = {m: {} for m in MODEL_ORDER}
+    for model_name, model in models.items():
+        for split_name, dataloader in dataloaders.items():
+            activations[model_name][split_name] = _collect_last_token_activations(
+                model,
+                dataloader,
+                layer_idx=args.layer,
+                device=device,
+            )
         model.cpu()
         del model
 
     if torch.cuda.is_available() and device.type == "cuda":
         torch.cuda.empty_cache()
 
-    metrics = _trajectory_metrics(layer_acts["base"], layer_acts["defense1"], layer_acts["defense2"])
+    means = _mean_vectors(activations)
+    direction_metrics = _compute_direction_metrics(means)
+    points = _build_pca_points(activations)
 
-    stacked = np.concatenate(
-        [
-            layer_acts["base"].numpy(),
-            layer_acts["defense1"].numpy(),
-            layer_acts["defense2"].numpy(),
-        ],
-        axis=0,
-    )
-    projected = _pca_2d(stacked)
-    n = layer_acts["base"].shape[0]
-    points = {
-        "base": projected[:n],
-        "defense1": projected[n : 2 * n],
-        "defense2": projected[2 * n : 3 * n],
+    payload = {
+        "layer": args.layer,
+        "datasets": {
+            "safety": str(args.safety_data),
+            "normal": str(args.normal_data),
+        },
+        "num_samples": {
+            split: int(next(iter(activations.values()))[split].shape[0]) for split in SPLIT_ORDER
+        },
+        "direction_metrics": direction_metrics,
+        "mean_vectors": {
+            model_name: {
+                split_name: means[model_name][split_name].tolist()
+                for split_name in SPLIT_ORDER
+            }
+            for model_name in MODEL_ORDER
+        },
+        "mean_trajectory_2d": {
+            split_name: [
+                points[model_name][split_name].mean(axis=0).tolist()
+                for model_name in MODEL_ORDER
+            ]
+            for split_name in SPLIT_ORDER
+        },
+        "points_2d": {
+            model_name: {
+                split_name: points[model_name][split_name].tolist()
+                for split_name in SPLIT_ORDER
+            }
+            for model_name in MODEL_ORDER
+        },
     }
 
-    metrics["layer"] = args.layer
-    metrics["input_data"] = str(args.input_data)
-    metrics["points_2d"] = {
-        name: coords.tolist() for name, coords in points.items()
-    }
-    metrics["mean_trajectory_2d"] = [
-        points["base"].mean(axis=0).tolist(),
-        points["defense1"].mean(axis=0).tolist(),
-        points["defense2"].mean(axis=0).tolist(),
-    ]
+    json_path = run_dir / "activation_trajectory_with_normal.json"
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
-    with (run_dir / "activation_trajectory.json").open("w", encoding="utf-8") as handle:
-        json.dump(metrics, handle, indent=2, ensure_ascii=False)
+    plot_path = run_dir / "activation_trajectory_with_normal.png"
+    _save_plot(points, plot_path)
 
-    _save_plot(points, run_dir / "activation_trajectory.png")
-    print(f"Saved trajectory metrics to {run_dir / 'activation_trajectory.json'}")
-    print(f"Saved trajectory plot to {run_dir / 'activation_trajectory.png'}")
+    print(f"Saved metrics JSON: {json_path}")
+    print(f"Saved trajectory plot: {plot_path}")
 
 
 if __name__ == "__main__":
